@@ -8,9 +8,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install pyinstaller
-      - run: pyinstaller --onefile --windowed --name="MiniLIS" lis_app.py
+      - run: pip install pyinstaller customtkinter fpdf2
+      - run: pyinstaller --onefile --windowed --collect-all customtkinter --name="CoreLIS_Pro" lis_app.py
       - uses: actions/upload-artifact@v4
         with:
-          name: MiniLIS-Windows
-          path: dist/MiniLIS.exe
+          name: CoreLIS-Pro-Windows
+          path: dist/CoreLIS_Pro.exe
