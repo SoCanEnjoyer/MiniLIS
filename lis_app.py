@@ -29,6 +29,7 @@ INITIAL_STAFF = [
     ("0010", "Princess Aguilo, RMT", "Medical Technologist (RMT)"),
     ("0011", "Keturah Totisano, RMT", "Medical Technologist (RMT)"),
     ("1111", "Gaia Aubrey Manalo, MD", "Pathologist"),
+    ("0012", "Arthur Mana-ay, RMT", "Medical Technologist (RMT)"),
 ]
 
 # (test_name, department, unit, low_val, high_val, crit_low, crit_high, delta_pct, tube_type, ref_range)
