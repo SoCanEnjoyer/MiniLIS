@@ -9,8 +9,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install pyinstaller customtkinter fpdf2
-      - run: pyinstaller --onefile --windowed --collect-all customtkinter --name="Monocytes_Delegates_LIS" lis_app.py
+      - run: pyinstaller --onefile --windowed --collect-all customtkinter --name="Monocytes_Delegates_LIS_v4" lis_app.py
       - uses: actions/upload-artifact@v4
         with:
-          name: Monocytes-Delegates-LIS-Windows
-          path: dist/Monocytes_Delegates_LIS.exe
+          name: Monocytes-Delegates-LIS-v4-Windows
+          path: dist/Monocytes_Delegates_LIS_v4.exe
