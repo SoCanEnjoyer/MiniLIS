@@ -1,10 +1,11 @@
 import sqlite3
 import os
 import csv
+import math
 import shutil
 import hashlib
 import webbrowser
-from datetime import datetime, timedelta
+from datetime import datetime
 import customtkinter as ctk
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -28,8 +29,8 @@ INITIAL_STAFF = [
     ("0009", "Nielmarc Pontioso, RMT", "Medical Technologist (RMT)"),
     ("0010", "Princess Aguilo, RMT", "Medical Technologist (RMT)"),
     ("0011", "Keturah Totisano, RMT", "Medical Technologist (RMT)"),
-    ("1111", "Gaia Aubrey Manalo, MD", "Pathologist"),
     ("0012", "Arthur Mana-ay, RMT", "Medical Technologist (RMT)"),
+    ("1111", "Gaia Aubrey Manalo, MD", "Pathologist"),
 ]
 
 # (test_name, department, unit, low_val, high_val, crit_low, crit_high, delta_pct, tube_type, ref_range)
@@ -148,9 +149,8 @@ def init_db():
         )
     """)
 
-    cur.execute("SELECT COUNT(*) FROM staff")
-    if cur.fetchone()[0] == 0:
-        cur.executemany("INSERT INTO staff (pin, full_name, role) VALUES (?, ?, ?)", INITIAL_STAFF)
+    # Sync all initial staff (including 0012 Arthur Mana-ay) without overwriting existing data
+    cur.executemany("INSERT OR IGNORE INTO staff (pin, full_name, role) VALUES (?, ?, ?)", INITIAL_STAFF)
 
     cur.execute("SELECT COUNT(*) FROM test_catalog")
     if cur.fetchone()[0] == 0:
@@ -180,7 +180,7 @@ def get_pathologist_name():
     conn.close()
     return row[0] if row else "Gaia Aubrey Manalo, MD"
 
-# --- PDF Generators (Cumulative Report & Barcode Tube Label) ---
+# --- PDF Generators ---
 class MonocytesReportPDF(FPDF):
     def header(self):
         self.set_fill_color(10, 15, 28)
@@ -207,7 +207,7 @@ class MonocytesReportPDF(FPDF):
         self.line(10, 275, 200, 275)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(100, 116, 139)
-        self.cell(0, 10, f"Monocytes Delegates LIS v4.0 - Printed {datetime.now().strftime('%Y-%m-%d %H:%M')} - Confidential Medical Record", align="C")
+        self.cell(0, 10, f"Monocytes Delegates LIS v5.0 - Printed {datetime.now().strftime('%Y-%m-%d %H:%M')} - Confidential Medical Record", align="C")
 
 def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf = MonocytesReportPDF()
@@ -217,7 +217,6 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     doc_hash = hashlib.sha256(f"{specimen_id}-{patient_info['mrn']}".encode()).hexdigest()[:12].upper()
     pathologist_name = get_pathologist_name()
 
-    # Demographics Card
     pdf.set_fill_color(241, 245, 249)
     pdf.rect(10, 40, 190, 30, 'F')
     pdf.set_xy(14, 43)
@@ -235,7 +234,6 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf.cell(80, 6, safe_pdf_text(f"Priority: {order_rows[0]['priority']}  |  Auth ID: {doc_hash}"), border=0, new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
 
-    # Results Table Header
     pdf.set_fill_color(30, 41, 59)
     pdf.set_text_color(255, 255, 255)
     pdf.set_font("Helvetica", "B", 9)
@@ -344,7 +342,192 @@ def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order
 
     pdf.output(save_path)
 
-# --- Custom Vector Range Gauge Canvas (Two-Line Long-Name Safe) ---
+# ==============================================================================
+# HYPERMODERN ANIMATED LOGIN & WELCOME GATE (ZERO-LEAK SECURITY CURTAIN)
+# ==============================================================================
+class BiometricOrbitCanvas(tk.Canvas):
+    def __init__(self, master, size=110, **kwargs):
+        super().__init__(master, width=size, height=size, bg="#0b1120", highlightthickness=0, **kwargs)
+        self.size = size
+        self.angle = 0.0
+        self.mode = "idle"  # idle | unlocking | error
+        self.running = True
+        self.animate()
+
+    def set_mode(self, mode):
+        self.mode = mode
+
+    def animate(self):
+        if not self.running or not self.winfo_exists():
+            return
+        self.delete("all")
+        cx = cy = self.size / 2
+        speed = 9.5 if self.mode == "unlocking" else 3.2
+        self.angle = (self.angle + speed) % 360
+
+        ring_outer = "#10b981" if self.mode == "unlocking" else "#ef4444" if self.mode == "error" else "#6366f1"
+        ring_inner = "#34d399" if self.mode == "unlocking" else "#f87171" if self.mode == "error" else "#38bdf8"
+
+        # Subtle static ambient ring
+        self.create_oval(10, 10, self.size - 10, self.size - 10, outline="#1e293b", width=2)
+
+        # Outer rotating diagnostic arc
+        self.create_arc(10, 10, self.size - 10, self.size - 10, start=self.angle, extent=115, style="arc", outline=ring_outer, width=3)
+        self.create_arc(10, 10, self.size - 10, self.size - 10, start=self.angle + 180, extent=90, style="arc", outline=ring_outer, width=3)
+
+        # Counter-rotating inner telemetry arc
+        self.create_arc(22, 22, self.size - 22, self.size - 22, start=-self.angle * 1.4, extent=140, style="arc", outline=ring_inner, width=2.2)
+
+        # Pulsing core emblem
+        pulse = math.sin(math.radians(self.angle * 2)) * 2.5
+        r_core = 14 + pulse
+        core_fill = "#064e3b" if self.mode == "unlocking" else "#450a0a" if self.mode == "error" else "#1e1b4b"
+        self.create_oval(cx - r_core, cy - r_core, cx + r_core, cy + r_core, fill=core_fill, outline=ring_outer, width=1.8)
+
+        glyph = "✓" if self.mode == "unlocking" else "!" if self.mode == "error" else "LIS"
+        self.create_text(cx, cy, text=glyph, fill="#f8fafc", font=("Segoe UI", 10 if glyph == "LIS" else 13, "bold"))
+
+        self.after(24, self.animate)
+
+
+class HypermodernLoginGate(ctk.CTkFrame):
+    """Full-window security curtain: hides 100% of confidential clinical data until authenticated."""
+    def __init__(self, master, on_authenticated):
+        super().__init__(master, fg_color="#050811", corner_radius=0)
+        self.on_authenticated = on_authenticated
+
+        # Top subtle accent bar
+        ctk.CTkFrame(self, height=3, fg_color="#6366f1", corner_radius=0).pack(fill="x", side="top")
+
+        # Center Glassmorphic Security Card
+        self.card = ctk.CTkFrame(self, width=460, height=470, fg_color="#0b1120", border_width=1, border_color="#1e293b", corner_radius=18)
+        self.card.place(relx=0.5, rely=0.5, anchor="center")
+        self.card.pack_propagate(False)
+
+        self.orbit = BiometricOrbitCanvas(self.card, size=104)
+        self.orbit.pack(pady=(26, 8))
+
+        ctk.CTkLabel(self.card, text="MONOCYTES DELEGATES LIS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#818cf8").pack()
+        self.title_lbl = ctk.CTkLabel(self.card, text="SECURE CLINICAL WORKSTATION", font=ctk.CTkFont(size=20, weight="bold"), text_color="#f8fafc")
+        self.title_lbl.pack(pady=(2, 4))
+
+        self.sub_lbl = ctk.CTkLabel(
+            self.card,
+            text="Confidential patient records are encrypted & locked.\nEnter your assigned RMT or Pathologist PIN to unlock.",
+            font=ctk.CTkFont(size=12), text_color="#94a3b8", justify="center"
+        )
+        self.sub_lbl.pack(pady=(0, 18))
+
+        # Container swapped during Welcome Animation
+        self.auth_box = ctk.CTkFrame(self.card, fg_color="transparent")
+        self.auth_box.pack(fill="x", padx=48)
+
+        self.pin_entry = ctk.CTkEntry(
+            self.auth_box, placeholder_text="• • • •", show="•", height=48,
+            font=ctk.CTkFont(family="Consolas", size=22, weight="bold"),
+            fg_color="#060911", border_color="#334155", border_width=1, justify="center"
+        )
+        self.pin_entry.pack(fill="x", pady=(0, 12))
+        self.pin_entry.bind("<Return>", self.attempt_login)
+
+        self.login_btn = ctk.CTkButton(
+            self.auth_box, text="Authenticate & Unlock Session", height=44,
+            font=ctk.CTkFont(size=13, weight="bold"),
+            fg_color="#4f46e5", hover_color="#4338ca", corner_radius=10,
+            command=self.attempt_login
+        )
+        self.login_btn.pack(fill="x")
+
+        self.status_lbl = ctk.CTkLabel(self.auth_box, text="", font=ctk.CTkFont(size=11, weight="bold"), text_color="#ef4444")
+        self.status_lbl.pack(pady=(10, 0))
+
+        # Welcome Transition Container (hidden until valid PIN)
+        self.welcome_box = ctk.CTkFrame(self.card, fg_color="transparent")
+        self.welcome_greeting = ctk.CTkLabel(self.welcome_box, text="WELCOME BACK", font=ctk.CTkFont(size=11, weight="bold"), text_color="#10b981")
+        self.welcome_greeting.pack(pady=(4, 2))
+        self.welcome_name = ctk.CTkLabel(self.welcome_box, text="", font=ctk.CTkFont(size=20, weight="bold"), text_color="#f8fafc", wraplength=390)
+        self.welcome_name.pack(pady=(0, 2))
+        self.welcome_role = ctk.CTkLabel(self.welcome_box, text="", font=ctk.CTkFont(size=12, weight="bold"), text_color="#38bdf8")
+        self.welcome_role.pack(pady=(0, 16))
+
+        self.progress = ctk.CTkProgressBar(self.welcome_box, width=320, height=8, progress_color="#10b981", fg_color="#1e293b")
+        self.progress.set(0)
+        self.progress.pack(pady=(0, 8))
+        self.load_step_lbl = ctk.CTkLabel(self.welcome_box, text="Initializing clinical session...", font=ctk.CTkFont(size=11), text_color="#94a3b8")
+        self.load_step_lbl.pack()
+
+        # Footer compliance tag
+        ctk.CTkLabel(self, text="ISO 15189 / HIPAA Compliant Access Gate  •  All Login Attempts Are Audited", font=ctk.CTkFont(size=11), text_color="#475569").pack(side="bottom", pady=16)
+
+        self.after(100, self.pin_entry.focus_set)
+
+    def shake_card(self):
+        offsets = [0.515, 0.485, 0.510, 0.490, 0.504, 0.496, 0.5]
+        def step(i=0):
+            if i < len(offsets) and self.winfo_exists():
+                self.card.place(relx=offsets[i], rely=0.5, anchor="center")
+                self.after(32, lambda: step(i + 1))
+        step()
+
+    def attempt_login(self, _event=None):
+        code = self.pin_entry.get().strip()
+        if not code:
+            return
+
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT full_name, role FROM staff WHERE pin = ?", (code,))
+        row = cur.fetchone()
+        conn.close()
+
+        if not row:
+            self.orbit.set_mode("error")
+            self.status_lbl.configure(text="ACCESS DENIED — Invalid Staff PIN")
+            self.pin_entry.delete(0, "end")
+            self.shake_card()
+            self.after(1400, lambda: self.orbit.set_mode("idle") if self.winfo_exists() else None)
+            return
+
+        full_name, role = row
+        log_audit(full_name, role, "OPERATOR_LOGIN", f"PIN-{code[:2]}**", "Authenticated workstation session")
+        self.play_welcome_animation(full_name, role)
+
+    def play_welcome_animation(self, full_name, role):
+        self.orbit.set_mode("unlocking")
+        self.card.configure(border_color="#10b981")
+        self.title_lbl.configure(text="IDENTITY VERIFIED", text_color="#10b981")
+        self.sub_lbl.configure(text="Decrypting patient registry & clinical worklist...")
+
+        self.auth_box.pack_forget()
+        self.welcome_name.configure(text=full_name)
+        self.welcome_role.configure(text=role)
+        self.welcome_box.pack(fill="x", padx=36, pady=(6, 0))
+
+        stages = [
+            (0.25, "Verifying RMT / Pathologist credentials..."),
+            (0.55, "Loading active STAT & SLA worklist..."),
+            (0.85, "Syncing Westgard QC & audit ledger..."),
+            (1.00, "Workspace unlocked. Welcome!"),
+        ]
+
+        def animate_progress(step_idx=0):
+            if not self.winfo_exists():
+                return
+            if step_idx <= 20:
+                val = step_idx / 20.0
+                self.progress.set(val)
+                for thresh, msg in stages:
+                    if val <= thresh:
+                        self.load_step_lbl.configure(text=msg)
+                        break
+                self.after(32, lambda: animate_progress(step_idx + 1))
+            else:
+                self.orbit.running = False
+                self.on_authenticated(full_name, role)
+
+        animate_progress()
+
+# --- Custom Vector Range Gauge Canvas ---
 class AnimatedRangeGauge(tk.Canvas):
     def __init__(self, master, height=64, **kwargs):
         super().__init__(master, height=height, highlightthickness=0, **kwargs)
@@ -498,7 +681,7 @@ class LeveyJenningsCanvas(tk.Canvas):
 class MonocytesDelegatesLIS(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Monocytes Delegates LIS v4.0 — Enterprise Clinical Diagnostic Suite")
+        self.title("Monocytes Delegates LIS v5.0 — Enterprise Clinical Diagnostic Suite")
         self.geometry("1400x850")
         self.minsize(1100, 680)
 
@@ -507,7 +690,51 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.is_authenticated = False
         self.pulse_state = False
         self.selected_patient_id = None
+        self.workspace_built = False
+        self.login_gate = None
 
+        # Show ONLY the zero-leak login screen at launch (no confidential UI created yet)
+        self.show_login_screen()
+
+    def show_login_screen(self):
+        if self.is_authenticated:
+            log_audit(self.current_user, self.current_role, "WORKSTATION_LOCKED", "SESSION", "Workstation locked by operator")
+        self.is_authenticated = False
+        self.current_user = "Locked Session"
+        self.current_role = "Unauthenticated"
+
+        if self.workspace_built:
+            self.sidebar.grid_forget()
+            for f in self.frames.values():
+                f.grid_forget()
+
+        if self.login_gate and self.login_gate.winfo_exists():
+            self.login_gate.destroy()
+
+        self.login_gate = HypermodernLoginGate(self, on_authenticated=self.unlock_workspace)
+        self.login_gate.place(relx=0, rely=0, relwidth=1, relheight=1)
+
+    def unlock_workspace(self, full_name, role):
+        self.current_user = full_name
+        self.current_role = role
+        self.is_authenticated = True
+
+        if self.login_gate and self.login_gate.winfo_exists():
+            self.login_gate.destroy()
+            self.login_gate = None
+
+        if not self.workspace_built:
+            self._build_clinical_workspace()
+            self.workspace_built = True
+            self.start_stat_pulse()
+        else:
+            self.sidebar.grid(row=0, column=0, sticky="nsew")
+
+        self.lbl_operator.configure(text=self.current_user)
+        self.lbl_role.configure(text=self.current_role)
+        self.show_frame("orders")
+
+    def _build_clinical_workspace(self):
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
@@ -520,7 +747,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         brand_box.grid(row=0, column=0, padx=20, pady=(24, 18), sticky="ew")
         ctk.CTkLabel(brand_box, text="MONOCYTES", font=ctk.CTkFont(size=21, weight="bold"), text_color=("#0f172a", "#f8fafc")).pack(anchor="w")
         ctk.CTkLabel(brand_box, text="DELEGATES LIS", font=ctk.CTkFont(size=13, weight="bold"), text_color="#6366f1").pack(anchor="w")
-        ctk.CTkLabel(brand_box, text="v4.0 Enterprise Clinical Suite", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(2, 0))
+        ctk.CTkLabel(brand_box, text="v5.0 Enterprise Clinical Suite", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(2, 0))
 
         self.nav_buttons = {}
         nav_items = [
@@ -553,7 +780,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.lbl_role = ctk.CTkLabel(footer_box, text=self.current_role, font=ctk.CTkFont(size=10), text_color="#818cf8", wraplength=190, justify="left")
         self.lbl_role.pack(anchor="w", padx=12, pady=(0, 8))
 
-        ctk.CTkButton(footer_box, text="Switch Operator / Lock", height=28, font=ctk.CTkFont(size=11), fg_color="#334155", hover_color="#475569", command=self.open_login_modal).pack(fill="x", padx=12, pady=(0, 8))
+        ctk.CTkButton(footer_box, text="Lock / Switch Operator", height=28, font=ctk.CTkFont(size=11, weight="bold"), fg_color="#dc2626", hover_color="#b91c1c", command=self.show_login_screen).pack(fill="x", padx=12, pady=(0, 8))
 
         self.theme_menu = ctk.CTkOptionMenu(
             footer_box, values=["Dark", "Light"], height=28, fg_color=("#cbd5e1", "#1e293b"),
@@ -570,10 +797,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.build_qc_frame()
         self.build_catalog_frame()
         self.build_audit_frame()
-
-        self.show_frame("orders")
-        self.start_stat_pulse()
-        self.after(150, self.open_login_modal)
 
     # ==========================================
     # DUAL-AXIS SCROLLABLE TREEVIEW HELPER
@@ -597,65 +820,17 @@ class MonocytesDelegatesLIS(ctk.CTk):
         return tree
 
     def start_stat_pulse(self):
-        self.pulse_state = not self.pulse_state
-        try:
-            stat_count = int(self.kpi_stat.cget("text"))
-        except ValueError:
-            stat_count = 0
-        if stat_count > 0:
-            self.stat_dot.configure(text_color="#ef4444" if self.pulse_state else "#7f1d1d")
-        else:
-            self.stat_dot.configure(text_color="#10b981")
+        if self.is_authenticated and self.workspace_built:
+            self.pulse_state = not self.pulse_state
+            try:
+                stat_count = int(self.kpi_stat.cget("text"))
+            except ValueError:
+                stat_count = 0
+            if stat_count > 0:
+                self.stat_dot.configure(text_color="#ef4444" if self.pulse_state else "#7f1d1d")
+            else:
+                self.stat_dot.configure(text_color="#10b981")
         self.after(650, self.start_stat_pulse)
-
-    # ==========================================
-    # CLEAN PIN AUTHENTICATION MODAL (NO DEMO PROFILES)
-    # ==========================================
-    def open_login_modal(self):
-        modal = ctk.CTkToplevel(self)
-        modal.title("Monocytes Delegates LIS — Staff Authentication")
-        modal.geometry("420x270")
-        modal.resizable(False, False)
-        modal.transient(self)
-        modal.grab_set()
-
-        def on_close():
-            if not self.is_authenticated:
-                self.destroy()
-            else:
-                modal.destroy()
-
-        modal.protocol("WM_DELETE_WINDOW", on_close)
-
-        ctk.CTkLabel(modal, text="MONOCYTES DELEGATES LIS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#6366f1").pack(pady=(24, 2))
-        ctk.CTkLabel(modal, text="OPERATOR PIN LOGIN", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(0, 6))
-        ctk.CTkLabel(modal, text="Enter your assigned 4-digit RMT or Pathologist PIN", text_color="gray", font=ctk.CTkFont(size=12)).pack(pady=(0, 16))
-
-        pin_entry = ctk.CTkEntry(modal, placeholder_text="••••", show="•", width=240, height=42, font=ctk.CTkFont(size=18, weight="bold"), justify="center")
-        pin_entry.pack(pady=(0, 14))
-        pin_entry.focus_set()
-
-        def attempt_login(_event=None):
-            code = pin_entry.get().strip()
-            conn = sqlite3.connect(DB_NAME)
-            cur = conn.cursor()
-            cur.execute("SELECT full_name, role FROM staff WHERE pin = ?", (code,))
-            row = cur.fetchone()
-            conn.close()
-
-            if row:
-                self.current_user, self.current_role = row
-                self.is_authenticated = True
-                self.lbl_operator.configure(text=self.current_user)
-                self.lbl_role.configure(text=self.current_role)
-                log_audit(self.current_user, self.current_role, "OPERATOR_LOGIN", f"PIN-{code[:2]}**", "Authenticated session")
-                modal.destroy()
-            else:
-                pin_entry.delete(0, "end")
-                messagebox.showerror("Access Denied", "Invalid Staff PIN. Please check your credentials and try again.", parent=modal)
-
-        pin_entry.bind("<Return>", attempt_login)
-        ctk.CTkButton(modal, text="Authenticate & Unlock", width=240, height=40, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#4f46e5", hover_color="#4338ca", command=attempt_login).pack()
 
     def change_theme(self, mode):
         ctk.set_appearance_mode(mode)
@@ -677,6 +852,8 @@ class MonocytesDelegatesLIS(ctk.CTk):
         style.map("Treeview", background=[("selected", "#4f46e5")], foreground=[("selected", "#ffffff")])
 
     def show_frame(self, name):
+        if not self.is_authenticated:
+            return
         for k, frame in self.frames.items():
             frame.grid_forget()
             if k != "new_order":
@@ -707,7 +884,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
         frame.grid_columnconfigure(1, weight=1)
         frame.grid_rowconfigure(2, weight=1)
 
-        # KPI Telemetry Row
         kpi_row = ctk.CTkFrame(frame, fg_color="transparent")
         kpi_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
         kpi_row.grid_columnconfigure((0, 1, 2, 3), weight=1)
@@ -717,7 +893,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.kpi_stat, self.stat_dot = self._make_kpi_card(kpi_row, 2, "ACTIVE STAT / SLA", "0", "#ef4444", with_dot=True)
         self.kpi_done = self._make_kpi_card(kpi_row, 3, "VERIFIED & RELEASED", "0", "#10b981")
 
-        # Filter & Export Toolbar
         toolbar = ctk.CTkFrame(frame, fg_color="transparent")
         toolbar.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
 
@@ -731,7 +906,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         ctk.CTkButton(toolbar, text="Export CSV Log", width=120, height=35, fg_color=("#e2e8f0", "#1e293b"), text_color=("#0f172a", "#f8fafc"), hover_color="#4f46e5", command=self.export_csv).pack(side="right")
 
-        # Left/Center: Dual-Axis Scrollable Clinical Worklist
         table_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         table_card.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
         self.apply_treeview_theme()
@@ -750,7 +924,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         self.order_tree.bind("<<TreeviewSelect>>", self.on_row_select)
 
-        # Right: Scrollable Clinical Inspector & Verification Drawer
         inspector = ctk.CTkScrollableFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"), width=355)
         inspector.grid(row=2, column=1, sticky="nsew")
 
@@ -760,7 +933,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.insp_patient = ctk.CTkLabel(inspector, text="Click any row to inspect & verify", font=ctk.CTkFont(size=11), text_color="gray", wraplength=310, justify="left")
         self.insp_patient.pack(anchor="w", padx=12, pady=(2, 8))
 
-        # Delta Check & Tube Box
         delta_box = ctk.CTkFrame(inspector, fg_color=("#e2e8f0", "#090d16"), corner_radius=8)
         delta_box.pack(fill="x", padx=10, pady=(0, 8))
         self.insp_tube = ctk.CTkLabel(delta_box, text="Tube: -", font=ctk.CTkFont(size=11), wraplength=295, justify="left")
@@ -770,11 +942,9 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         ctk.CTkButton(inspector, text="View Patient Cumulative History", height=28, font=ctk.CTkFont(size=11), fg_color="transparent", border_width=1, border_color="#4f46e5", text_color=("#4f46e5", "#818cf8"), hover_color=("#e0e7ff", "#1e1b4b"), command=self.open_patient_history_modal).pack(fill="x", padx=10, pady=(0, 10))
 
-        # Animated Vector Range Gauge
         self.range_gauge = AnimatedRangeGauge(inspector, height=64)
         self.range_gauge.pack(fill="x", padx=10, pady=(0, 10))
 
-        # Result Entry Inputs
         ctk.CTkLabel(inspector, text="Measured Result Value:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=12)
         self.res_input = ctk.CTkEntry(inspector, placeholder_text="e.g. 6.8 or Negative", height=34)
         self.res_input.pack(fill="x", padx=12, pady=(2, 8))
@@ -1611,14 +1781,12 @@ class MonocytesDelegatesLIS(ctk.CTk):
         ctk.CTkLabel(top_bar, text="Chain-of-Custody Audit Log & Staff Roster", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=16, pady=14)
         ctk.CTkButton(top_bar, text="Backup Database (.db)", fg_color="#10b981", hover_color="#059669", command=self.backup_database).pack(side="right", padx=16, pady=12)
 
-        # Left: Audit Log Table
         t_frame = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         t_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         cols = ("Audit ID", "Timestamp", "Operator", "Role", "Action", "Reference ID", "Details")
         widths = [65, 145, 175, 170, 130, 130, 260]
         self.audit_tree = self._create_scrolled_treeview(t_frame, cols, widths, left_align_cols=("Operator", "Role", "Details"))
 
-        # Right: Staff & PIN Manager (Pathologist / Admin Control)
         staff_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         staff_card.grid(row=1, column=1, sticky="nsew")
         staff_card.grid_rowconfigure(3, weight=1)
