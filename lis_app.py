@@ -14,13 +14,22 @@ from fpdf import FPDF
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
 
-DB_NAME = "monocytes_delegates_lis_v3.db"
+DB_NAME = "monocytes_delegates_lis_v4.db"
 
-STAFF_ROLES = {
-    "9999": ("Dr. A. Sterling, MD", "Pathologist / Director"),
-    "1234": ("M. Reyes, RMT", "Medical Technologist"),
-    "1111": ("C. Navarro, CPT", "Phlebotomy / Reception"),
-}
+INITIAL_STAFF = [
+    ("0001", "Carlyle Dioleste, RMT", "Medical Technologist (RMT)"),
+    ("0002", "Ariech Legaspi, RMT", "Medical Technologist (RMT)"),
+    ("0003", "Melody Bajande, RMT", "Medical Technologist (RMT)"),
+    ("0004", "Christine Patani-e, RMT", "Medical Technologist (RMT)"),
+    ("0005", "Chauncy Melvida, RMT", "Medical Technologist (RMT)"),
+    ("0006", "Elaijeen Cordova, RMT", "Medical Technologist (RMT)"),
+    ("0007", "Dianne Pastor, RMT", "Medical Technologist (RMT)"),
+    ("0008", "Michael Malabago, RMT", "Medical Technologist (RMT)"),
+    ("0009", "Nielmarc Pontioso, RMT", "Medical Technologist (RMT)"),
+    ("0010", "Princess Aguilo, RMT", "Medical Technologist (RMT)"),
+    ("0011", "Keturah Totisano, RMT", "Medical Technologist (RMT)"),
+    ("1111", "Gaia Aubrey Manalo, MD", "Pathologist"),
+]
 
 # (test_name, department, unit, low_val, high_val, crit_low, crit_high, delta_pct, tube_type, ref_range)
 DEFAULT_TESTS = [
@@ -38,7 +47,6 @@ DEFAULT_TESTS = [
     ("Blood Typing (ABO/Rh)", "Immunohematology", "", None, None, None, None, None, "Pink (EDTA)", "Qualitative"),
 ]
 
-# QC Targets: (assay, level, target_mean, target_sd, unit)
 QC_TARGETS = {
     "Hemoglobin (Hgb) | Level 1 (Normal)": ("Hemoglobin (Hgb)", "Level 1 (Normal)", 13.8, 0.35, "g/dL"),
     "Hemoglobin (Hgb) | Level 2 (Abnormal)": ("Hemoglobin (Hgb)", "Level 2 (Abnormal)", 7.8, 0.25, "g/dL"),
@@ -57,6 +65,13 @@ def safe_pdf_text(text):
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS staff (
+            pin TEXT PRIMARY KEY,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL
+        )
+    """)
     cur.execute("""
         CREATE TABLE IF NOT EXISTS patients (
             patient_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,6 +147,10 @@ def init_db():
         )
     """)
 
+    cur.execute("SELECT COUNT(*) FROM staff")
+    if cur.fetchone()[0] == 0:
+        cur.executemany("INSERT INTO staff (pin, full_name, role) VALUES (?, ?, ?)", INITIAL_STAFF)
+
     cur.execute("SELECT COUNT(*) FROM test_catalog")
     if cur.fetchone()[0] == 0:
         cur.executemany("""
@@ -152,7 +171,15 @@ def log_audit(operator, role, action, ref_id, details):
     conn.commit()
     conn.close()
 
-# --- PDF Generators (Report & Barcode Tube Label) ---
+def get_pathologist_name():
+    conn = sqlite3.connect(DB_NAME)
+    cur = conn.cursor()
+    cur.execute("SELECT full_name FROM staff WHERE role LIKE '%Pathologist%' LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    return row[0] if row else "Gaia Aubrey Manalo, MD"
+
+# --- PDF Generators (Cumulative Report & Barcode Tube Label) ---
 class MonocytesReportPDF(FPDF):
     def header(self):
         self.set_fill_color(10, 15, 28)
@@ -179,7 +206,7 @@ class MonocytesReportPDF(FPDF):
         self.line(10, 275, 200, 275)
         self.set_font("Helvetica", "I", 8)
         self.set_text_color(100, 116, 139)
-        self.cell(0, 10, f"Monocytes Delegates LIS v3.0 - Printed {datetime.now().strftime('%Y-%m-%d %H:%M')} - Confidential Medical Record", align="C")
+        self.cell(0, 10, f"Monocytes Delegates LIS v4.0 - Printed {datetime.now().strftime('%Y-%m-%d %H:%M')} - Confidential Medical Record", align="C")
 
 def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf = MonocytesReportPDF()
@@ -187,6 +214,7 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf.set_text_color(15, 23, 42)
 
     doc_hash = hashlib.sha256(f"{specimen_id}-{patient_info['mrn']}".encode()).hexdigest()[:12].upper()
+    pathologist_name = get_pathologist_name()
 
     # Demographics Card
     pdf.set_fill_color(241, 245, 249)
@@ -219,7 +247,7 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf.set_font("Helvetica", "", 9)
     for row in order_rows:
         pdf.set_text_color(15, 23, 42)
-        pdf.cell(56, 9, safe_pdf_text(row['test_name']), border=1)
+        pdf.cell(56, 9, safe_pdf_text(row['test_name'][:34]), border=1)
         pdf.set_font("Helvetica", "B", 9)
         pdf.cell(28, 9, safe_pdf_text(row['result_value']), border=1, align="C")
         pdf.set_font("Helvetica", "", 8.5)
@@ -227,15 +255,17 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
         pdf.cell(26, 9, safe_pdf_text(row['prior_result'] or "-"), border=1, align="C")
 
         flag_str = str(row['flag'])
+        if row['status'] == "Amended":
+            flag_str = f"{flag_str} [AMENDED]"
         if row['delta_flag']:
             flag_str = f"{flag_str} ({row['delta_flag']})"
 
         if "CRITICAL" in flag_str or "HIGH" in flag_str or "REJECTED" in flag_str:
             pdf.set_text_color(220, 38, 38)
-            pdf.set_font("Helvetica", "B", 8.5)
-        elif "LOW" in flag_str:
+            pdf.set_font("Helvetica", "B", 8)
+        elif "LOW" in flag_str or "AMENDED" in flag_str:
             pdf.set_text_color(217, 119, 6)
-            pdf.set_font("Helvetica", "B", 8.5)
+            pdf.set_font("Helvetica", "B", 8)
         elif "NORMAL" in flag_str:
             pdf.set_text_color(22, 163, 74)
             pdf.set_font("Helvetica", "B", 8.5)
@@ -255,8 +285,8 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     verifiers = ", ".join(sorted(set(r['verified_by'] for r in order_rows if r['verified_by'])))
     pdf.set_font("Helvetica", "B", 9.5)
     pdf.set_text_color(15, 23, 42)
-    pdf.cell(95, 7, safe_pdf_text(f"Performed & Verified By: {verifiers or 'Authorized RMT'}"), border="T")
-    pdf.cell(95, 7, "Pathology Review: Electronic Signature on File", border="T", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(95, 7, safe_pdf_text(f"Verified By: {verifiers or 'Authorized RMT'}"), border="T")
+    pdf.cell(95, 7, safe_pdf_text(f"Pathologist: {pathologist_name}"), border="T", new_x="LMARGIN", new_y="NEXT")
 
     pdf.set_font("Helvetica", "", 8)
     pdf.set_text_color(100, 116, 139)
@@ -264,12 +294,10 @@ def generate_specimen_pdf(patient_info, specimen_id, order_rows, save_path):
     pdf.output(save_path)
 
 def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order_date, save_path):
-    """Generates a 3.2 x 1.8 inch specimen tube barcode label PDF."""
     pdf = FPDF(orientation="L", unit="mm", format=(46, 82))
     pdf.set_auto_page_break(False)
     pdf.add_page()
 
-    # Top Header Bar
     pdf.set_fill_color(15, 23, 42)
     pdf.rect(0, 0, 82, 7, 'F')
     pdf.set_xy(3, 1.5)
@@ -282,7 +310,6 @@ def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order
     else:
         pdf.cell(24, 4, safe_pdf_text(priority.upper()), border=0, align="R")
 
-    # Patient & MRN
     pdf.set_xy(3, 8.5)
     pdf.set_text_color(15, 23, 42)
     pdf.set_font("Helvetica", "B", 8.5)
@@ -291,7 +318,6 @@ def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order
     pdf.set_font("Helvetica", "", 7)
     pdf.cell(76, 3.8, safe_pdf_text(f"DOB: {patient_info['dob']} | Sex: {patient_info['sex']} | {order_date}"), new_x="LMARGIN", new_y="NEXT")
 
-    # Deterministic Vector Barcode Bars from Specimen ID
     bits = "".join(f"{ord(c):08b}" for c in specimen_id)
     x_pos = 5.0
     y_top = 18.0
@@ -305,7 +331,6 @@ def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order
         if x_pos > 76:
             break
 
-    # Human-Readable Specimen ID & Tube Guide
     pdf.set_xy(3, 32)
     pdf.set_font("Courier", "B", 9)
     pdf.cell(76, 4.5, safe_pdf_text(f"*{specimen_id}*"), align="C", new_x="LMARGIN", new_y="NEXT")
@@ -318,21 +343,23 @@ def generate_barcode_label_pdf(patient_info, specimen_id, tubes, priority, order
 
     pdf.output(save_path)
 
-# --- Custom Vector Range Gauge Canvas ---
+# --- Custom Vector Range Gauge Canvas (Two-Line Long-Name Safe) ---
 class AnimatedRangeGauge(tk.Canvas):
-    def __init__(self, master, height=44, **kwargs):
+    def __init__(self, master, height=64, **kwargs):
         super().__init__(master, height=height, highlightthickness=0, **kwargs)
         self.progress = 0.0
         self.bar_color = "#6366f1"
         self.low_marker = 0.28
         self.high_marker = 0.72
-        self.label_text = "Select an order row to inspect range telemetry"
+        self.top_text = "Select an order row to inspect"
+        self.sub_text = "Awaiting specimen telemetry"
         self.anim_id = None
         self.bind("<Configure>", lambda _: self.redraw())
 
-    def set_state(self, target_ratio, color, label_text, animate=True):
+    def set_state(self, target_ratio, color, top_text, sub_text, animate=True):
         self.bar_color = color
-        self.label_text = label_text
+        self.top_text = top_text
+        self.sub_text = sub_text
         if self.anim_id:
             self.after_cancel(self.anim_id)
             self.anim_id = None
@@ -342,15 +369,14 @@ class AnimatedRangeGauge(tk.Canvas):
             self.redraw()
             return
 
-        start_val = 0.0
         steps = 22
         step_idx = [0]
 
         def tick():
             step_idx[0] += 1
             t = step_idx[0] / steps
-            eased = 1.0 - pow(1.0 - t, 3)  # Cubic ease-out
-            self.progress = start_val + (target_ratio - start_val) * eased
+            eased = 1.0 - pow(1.0 - t, 3)
+            self.progress = target_ratio * eased
             self.redraw()
             if step_idx[0] < steps:
                 self.anim_id = self.after(14, tick)
@@ -361,43 +387,37 @@ class AnimatedRangeGauge(tk.Canvas):
 
     def redraw(self):
         self.delete("all")
-        w = max(self.winfo_width(), 200)
-        h = max(self.winfo_height(), 44)
+        w = max(self.winfo_width(), 220)
         is_dark = ctk.get_appearance_mode() == "Dark"
-        bg_col = "#111827" if is_dark else "#f8fafc"
+        bg_col = "#090d16" if is_dark else "#f1f5f9"
         track_col = "#1e293b" if is_dark else "#e2e8f0"
-        txt_col = "#f1f5f9" if is_dark else "#0f172a"
-        sub_col = "#94a3b8" if is_dark else "#64748b"
+        txt_col = "#f8fafc" if is_dark else "#0f172a"
+        sub_col = "#94a3b8" if is_dark else "#475569"
 
         self.configure(bg=bg_col)
-        # Top text
-        self.create_text(10, 11, text=self.label_text, anchor="w", fill=txt_col, font=("Segoe UI", 9, "bold"))
+        self.create_text(10, 12, text=self.top_text, anchor="w", fill=txt_col, font=("Segoe UI", 9, "bold"), width=w - 20)
+        self.create_text(10, 27, text=self.sub_text, anchor="w", fill=self.bar_color, font=("Segoe UI", 8, "bold"), width=w - 20)
 
-        # Track geometry
         pad_x = 10
-        track_y1, track_y2 = 24, 34
+        track_y1, track_y2 = 38, 48
         track_w = w - 2 * pad_x
         self.create_rectangle(pad_x, track_y1, pad_x + track_w, track_y2, fill=track_col, outline="")
 
-        # Normal Reference Zone highlight band
         z_x1 = pad_x + track_w * self.low_marker
         z_x2 = pad_x + track_w * self.high_marker
-        zone_col = "#1e3a2f" if is_dark else "#dcfce7"
+        zone_col = "#14332a" if is_dark else "#dcfce7"
         self.create_rectangle(z_x1, track_y1, z_x2, track_y2, fill=zone_col, outline="")
 
-        # Animated Fill Bar
         fill_w = max(0, track_w * self.progress)
         if fill_w > 0:
             self.create_rectangle(pad_x, track_y1, pad_x + fill_w, track_y2, fill=self.bar_color, outline="")
-            # Glowing indicator cap
             cap_x = pad_x + fill_w
             self.create_oval(cap_x - 5, track_y1 - 2, cap_x + 5, track_y2 + 2, fill="#ffffff", outline=self.bar_color, width=2)
 
-        # Low / High threshold ticks
         self.create_line(z_x1, track_y1 - 3, z_x1, track_y2 + 3, fill="#64748b", width=1.5)
         self.create_line(z_x2, track_y1 - 3, z_x2, track_y2 + 3, fill="#64748b", width=1.5)
-        self.create_text(z_x1, 40, text="LOW", fill=sub_col, font=("Segoe UI", 7, "bold"))
-        self.create_text(z_x2, 40, text="HIGH", fill=sub_col, font=("Segoe UI", 7, "bold"))
+        self.create_text(z_x1, 56, text="LOW", fill=sub_col, font=("Segoe UI", 7, "bold"))
+        self.create_text(z_x2, 56, text="HIGH", fill=sub_col, font=("Segoe UI", 7, "bold"))
 
 # --- Animated Levey-Jennings QC Vector Chart ---
 class LeveyJenningsCanvas(tk.Canvas):
@@ -413,7 +433,7 @@ class LeveyJenningsCanvas(tk.Canvas):
         self.title = title
         self.mean = mean
         self.sd = max(sd, 0.0001)
-        self.points = points  # list of (run_date, val, z_score, status)
+        self.points = points
         self.redraw()
 
     def redraw(self):
@@ -422,7 +442,6 @@ class LeveyJenningsCanvas(tk.Canvas):
         h = max(self.winfo_height(), 240)
         is_dark = ctk.get_appearance_mode() == "Dark"
         bg_col = "#0f172a" if is_dark else "#ffffff"
-        grid_col = "#1e293b" if is_dark else "#e2e8f0"
         txt_col = "#f8fafc" if is_dark else "#0f172a"
         self.configure(bg=bg_col)
 
@@ -436,7 +455,6 @@ class LeveyJenningsCanvas(tk.Canvas):
             clamped = max(-3.6, min(3.6, z))
             return top + plot_h * (0.5 - clamped / 7.6)
 
-        # Draw SD Bands (+3SD to -3SD)
         sd_levels = [
             (3.0, "+3SD", "#ef4444"),
             (2.0, "+2SD", "#f59e0b"),
@@ -463,14 +481,12 @@ class LeveyJenningsCanvas(tk.Canvas):
             y = y_for_z(z)
             coords.append((x, y, val, z, status, r_date))
 
-        # Connecting line
         if len(coords) > 1:
             line_pts = []
             for c in coords:
                 line_pts.extend([c[0], c[1]])
             self.create_line(*line_pts, fill="#6366f1", width=2.2)
 
-        # Data nodes
         for idx, (x, y, val, z, status, r_date) in enumerate(coords, start=1):
             node_col = "#ef4444" if "1-3s" in status else "#f59e0b" if "1-2s" in status else "#10b981"
             self.create_oval(x - 5, y - 5, x + 5, y + 5, fill=node_col, outline="#ffffff", width=1.5)
@@ -481,19 +497,21 @@ class LeveyJenningsCanvas(tk.Canvas):
 class MonocytesDelegatesLIS(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Monocytes Delegates LIS v3.0 — Enterprise Clinical Diagnostic Suite")
-        self.geometry("1380x840")
-        self.minsize(1200, 720)
+        self.title("Monocytes Delegates LIS v4.0 — Enterprise Clinical Diagnostic Suite")
+        self.geometry("1400x850")
+        self.minsize(1100, 680)
 
-        self.current_user = "M. Reyes, RMT"
-        self.current_role = "Medical Technologist"
+        self.current_user = "Locked Session"
+        self.current_role = "Unauthenticated"
+        self.is_authenticated = False
         self.pulse_state = False
+        self.selected_patient_id = None
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
         # --- Sidebar Navigation Rail ---
-        self.sidebar = ctk.CTkFrame(self, width=240, corner_radius=0, fg_color=("#f1f5f9", "#060911"))
+        self.sidebar = ctk.CTkFrame(self, width=245, corner_radius=0, fg_color=("#f1f5f9", "#060911"))
         self.sidebar.grid(row=0, column=0, sticky="nsew")
         self.sidebar.grid_rowconfigure(7, weight=1)
 
@@ -501,7 +519,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         brand_box.grid(row=0, column=0, padx=20, pady=(24, 18), sticky="ew")
         ctk.CTkLabel(brand_box, text="MONOCYTES", font=ctk.CTkFont(size=21, weight="bold"), text_color=("#0f172a", "#f8fafc")).pack(anchor="w")
         ctk.CTkLabel(brand_box, text="DELEGATES LIS", font=ctk.CTkFont(size=13, weight="bold"), text_color="#6366f1").pack(anchor="w")
-        ctk.CTkLabel(brand_box, text="v3.0 Enterprise Clinical Suite", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(2, 0))
+        ctk.CTkLabel(brand_box, text="v4.0 Enterprise Clinical Suite", font=ctk.CTkFont(size=11), text_color="gray").pack(anchor="w", pady=(2, 0))
 
         self.nav_buttons = {}
         nav_items = [
@@ -510,7 +528,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
             ("patients", "Patient Registry", "transparent"),
             ("qc", "Quality Control (QC)", "transparent"),
             ("catalog", "Test Catalog & Cutoffs", "transparent"),
-            ("audit", "Audit Trail & System", "transparent"),
+            ("audit", "Audit Trail & Staff PINs", "transparent"),
         ]
 
         for idx, (key, label, color) in enumerate(nav_items, start=1):
@@ -529,9 +547,9 @@ class MonocytesDelegatesLIS(ctk.CTk):
         footer_box = ctk.CTkFrame(self.sidebar, fg_color=("#e2e8f0", "#0f172a"), corner_radius=10)
         footer_box.grid(row=8, column=0, padx=16, pady=18, sticky="ew")
 
-        self.lbl_operator = ctk.CTkLabel(footer_box, text=self.current_user, font=ctk.CTkFont(size=12, weight="bold"))
+        self.lbl_operator = ctk.CTkLabel(footer_box, text=self.current_user, font=ctk.CTkFont(size=12, weight="bold"), wraplength=190, justify="left")
         self.lbl_operator.pack(anchor="w", padx=12, pady=(10, 0))
-        self.lbl_role = ctk.CTkLabel(footer_box, text=self.current_role, font=ctk.CTkFont(size=10), text_color="#818cf8")
+        self.lbl_role = ctk.CTkLabel(footer_box, text=self.current_role, font=ctk.CTkFont(size=10), text_color="#818cf8", wraplength=190, justify="left")
         self.lbl_role.pack(anchor="w", padx=12, pady=(0, 8))
 
         ctk.CTkButton(footer_box, text="Switch Operator / Lock", height=28, font=ctk.CTkFont(size=11), fg_color="#334155", hover_color="#475569", command=self.open_login_modal).pack(fill="x", padx=12, pady=(0, 8))
@@ -554,7 +572,28 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         self.show_frame("orders")
         self.start_stat_pulse()
-        self.after(200, self.open_login_modal)
+        self.after(150, self.open_login_modal)
+
+    # ==========================================
+    # DUAL-AXIS SCROLLABLE TREEVIEW HELPER
+    # ==========================================
+    def _create_scrolled_treeview(self, parent, columns, widths, left_align_cols=()):
+        parent.grid_rowconfigure(0, weight=1)
+        parent.grid_columnconfigure(0, weight=1)
+
+        tree = ttk.Treeview(parent, columns=columns, show="headings")
+        for c, w in zip(columns, widths):
+            tree.heading(c, text=c)
+            tree.column(c, width=w, minwidth=max(50, w - 20), stretch=False, anchor="w" if c in left_align_cols else "center")
+
+        vsb = ttk.Scrollbar(parent, orient="vertical", command=tree.yview)
+        hsb = ttk.Scrollbar(parent, orient="horizontal", command=tree.xview)
+        tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        tree.grid(row=0, column=0, sticky="nsew", padx=(2, 0), pady=(2, 0))
+        vsb.grid(row=0, column=1, sticky="ns", pady=(2, 0))
+        hsb.grid(row=1, column=0, sticky="ew", padx=(2, 0))
+        return tree
 
     def start_stat_pulse(self):
         self.pulse_state = not self.pulse_state
@@ -566,45 +605,56 @@ class MonocytesDelegatesLIS(ctk.CTk):
             self.stat_dot.configure(text_color="#ef4444" if self.pulse_state else "#7f1d1d")
         else:
             self.stat_dot.configure(text_color="#10b981")
-        self.after(700, self.start_stat_pulse)
+        self.after(650, self.start_stat_pulse)
 
     # ==========================================
-    # ROLE-BASED LOGIN / OPERATOR SWITCHER MODAL
+    # CLEAN PIN AUTHENTICATION MODAL (NO DEMO PROFILES)
     # ==========================================
     def open_login_modal(self):
         modal = ctk.CTkToplevel(self)
-        modal.title("Monocytes Delegates LIS — Operator Authentication")
-        modal.geometry("440x390")
+        modal.title("Monocytes Delegates LIS — Staff Authentication")
+        modal.geometry("420x270")
         modal.resizable(False, False)
         modal.transient(self)
         modal.grab_set()
 
-        ctk.CTkLabel(modal, text="OPERATOR AUTHENTICATION", font=ctk.CTkFont(size=18, weight="bold")).pack(pady=(24, 4))
-        ctk.CTkLabel(modal, text="Select a role profile or enter your 4-digit staff PIN", text_color="gray", font=ctk.CTkFont(size=12)).pack(pady=(0, 16))
+        def on_close():
+            if not self.is_authenticated:
+                self.destroy()
+            else:
+                modal.destroy()
 
-        pin_entry = ctk.CTkEntry(modal, placeholder_text="Enter PIN (e.g. 9999, 1234, 1111)", show="*", width=260, height=38, justify="center")
-        pin_entry.pack(pady=(0, 10))
+        modal.protocol("WM_DELETE_WINDOW", on_close)
 
-        def login_with_pin(pin_val=None):
-            code = (pin_val or pin_entry.get()).strip()
-            if code in STAFF_ROLES:
-                self.current_user, self.current_role = STAFF_ROLES[code]
+        ctk.CTkLabel(modal, text="MONOCYTES DELEGATES LIS", font=ctk.CTkFont(size=12, weight="bold"), text_color="#6366f1").pack(pady=(24, 2))
+        ctk.CTkLabel(modal, text="OPERATOR PIN LOGIN", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=(0, 6))
+        ctk.CTkLabel(modal, text="Enter your assigned 4-digit RMT or Pathologist PIN", text_color="gray", font=ctk.CTkFont(size=12)).pack(pady=(0, 16))
+
+        pin_entry = ctk.CTkEntry(modal, placeholder_text="••••", show="•", width=240, height=42, font=ctk.CTkFont(size=18, weight="bold"), justify="center")
+        pin_entry.pack(pady=(0, 14))
+        pin_entry.focus_set()
+
+        def attempt_login(_event=None):
+            code = pin_entry.get().strip()
+            conn = sqlite3.connect(DB_NAME)
+            cur = conn.cursor()
+            cur.execute("SELECT full_name, role FROM staff WHERE pin = ?", (code,))
+            row = cur.fetchone()
+            conn.close()
+
+            if row:
+                self.current_user, self.current_role = row
+                self.is_authenticated = True
                 self.lbl_operator.configure(text=self.current_user)
                 self.lbl_role.configure(text=self.current_role)
-                log_audit(self.current_user, self.current_role, "OPERATOR_LOGIN", code, "Session authenticated")
+                log_audit(self.current_user, self.current_role, "OPERATOR_LOGIN", f"PIN-{code[:2]}**", "Authenticated session")
                 modal.destroy()
             else:
-                messagebox.showerror("Invalid PIN", "Unrecognized PIN. Use 9999 (Pathologist), 1234 (MedTech), or 1111 (Reception).", parent=modal)
+                pin_entry.delete(0, "end")
+                messagebox.showerror("Access Denied", "Invalid Staff PIN. Please check your credentials and try again.", parent=modal)
 
-        ctk.CTkButton(modal, text="Unlock Session", width=260, height=38, fg_color="#4f46e5", hover_color="#4338ca", command=login_with_pin).pack(pady=(0, 18))
-
-        ctk.CTkLabel(modal, text="Quick Role Switch (Demo Profiles):", font=ctk.CTkFont(size=11, weight="bold"), text_color="gray").pack(pady=(0, 8))
-        for code, (name, role) in STAFF_ROLES.items():
-            ctk.CTkButton(
-                modal, text=f"{name}  -  {role}  [PIN: {code}]", width=340, height=34,
-                fg_color=("#e2e8f0", "#1e293b"), text_color=("#0f172a", "#f8fafc"), hover_color="#4f46e5",
-                command=lambda c=code: login_with_pin(c)
-            ).pack(pady=4)
+        pin_entry.bind("<Return>", attempt_login)
+        ctk.CTkButton(modal, text="Authenticate & Unlock", width=240, height=40, font=ctk.CTkFont(size=13, weight="bold"), fg_color="#4f46e5", hover_color="#4338ca", command=attempt_login).pack()
 
     def change_theme(self, mode):
         ctk.set_appearance_mode(mode)
@@ -644,9 +694,10 @@ class MonocytesDelegatesLIS(ctk.CTk):
             self.refresh_catalog()
         elif name == "audit":
             self.refresh_audit()
+            self.refresh_staff_list()
 
     # ==========================================
-    # VIEW 1: SPLIT-PANE CLINICAL WORKLIST & INSPECTOR
+    # VIEW 1: SPLIT-PANE WORKLIST & SCROLLABLE INSPECTOR
     # ==========================================
     def build_orders_frame(self):
         frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -655,7 +706,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         frame.grid_columnconfigure(1, weight=1)
         frame.grid_rowconfigure(2, weight=1)
 
-        # Top KPI Telemetry Row
+        # KPI Telemetry Row
         kpi_row = ctk.CTkFrame(frame, fg_color="transparent")
         kpi_row.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
         kpi_row.grid_columnconfigure((0, 1, 2, 3), weight=1)
@@ -673,75 +724,90 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.search_var.trace_add("write", lambda *_: self.refresh_orders())
         ctk.CTkEntry(toolbar, placeholder_text="Search Patient, MRN, Specimen ID, or Test...", textvariable=self.search_var, width=320, height=35).pack(side="left", padx=(0, 10))
 
-        self.status_filter = ctk.CTkSegmentedButton(toolbar, values=["All", "Pending", "Completed", "Rejected"], selected_color="#4f46e5", command=lambda _: self.refresh_orders())
+        self.status_filter = ctk.CTkSegmentedButton(toolbar, values=["All", "Pending", "Completed", "Amended", "Rejected"], selected_color="#4f46e5", command=lambda _: self.refresh_orders())
         self.status_filter.set("All")
         self.status_filter.pack(side="left", padx=5)
 
         ctk.CTkButton(toolbar, text="Export CSV Log", width=120, height=35, fg_color=("#e2e8f0", "#1e293b"), text_color=("#0f172a", "#f8fafc"), hover_color="#4f46e5", command=self.export_csv).pack(side="right")
 
-        # Left/Center: Clinical Worklist Table
+        # Left/Center: Dual-Axis Scrollable Clinical Worklist
         table_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         table_card.grid(row=2, column=0, sticky="nsew", padx=(0, 12))
         self.apply_treeview_theme()
 
-        cols = ("ID", "Specimen ID", "Patient", "Assay", "Priority", "TAT", "Status", "Result", "Flag")
-        self.order_tree = ttk.Treeview(table_card, columns=cols, show="headings")
-        widths = [38, 125, 140, 165, 68, 72, 82, 92, 85]
-        for c, w in zip(cols, widths):
-            self.order_tree.heading(c, text=c)
-            self.order_tree.column(c, width=w, anchor="center" if c not in ["Patient", "Assay"] else "w")
+        cols = ("ID", "Specimen ID", "Patient", "Assay / Investigation", "Priority", "TAT", "Status", "Result", "Flag", "Verified By")
+        widths = [45, 135, 175, 200, 75, 78, 88, 105, 115, 165]
+        self.order_tree = self._create_scrolled_treeview(table_card, cols, widths, left_align_cols=("Patient", "Assay / Investigation", "Verified By"))
 
         self.order_tree.tag_configure("stat", foreground="#f87171")
         self.order_tree.tag_configure("critical", foreground="#ff4d6d")
         self.order_tree.tag_configure("high", foreground="#ef4444")
         self.order_tree.tag_configure("low", foreground="#f59e0b")
+        self.order_tree.tag_configure("amended", foreground="#38bdf8")
         self.order_tree.tag_configure("normal", foreground="#10b981")
         self.order_tree.tag_configure("rejected", foreground="#94a3b8")
 
         self.order_tree.bind("<<TreeviewSelect>>", self.on_row_select)
-        self.order_tree.pack(side="left", fill="both", expand=True, padx=2, pady=2)
-        sb = ttk.Scrollbar(table_card, orient="vertical", command=self.order_tree.yview)
-        self.order_tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
 
-        # Right: Clinical Inspector & Verification Drawer
-        inspector = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"), width=330)
+        # Right: Scrollable Clinical Inspector & Verification Drawer
+        inspector = ctk.CTkScrollableFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"), width=355)
         inspector.grid(row=2, column=1, sticky="nsew")
-        inspector.grid_propagate(False)
 
-        ctk.CTkLabel(inspector, text="CLINICAL INSPECTOR", font=ctk.CTkFont(size=13, weight="bold"), text_color="#818cf8").pack(anchor="w", padx=16, pady=(14, 2))
-        self.insp_spec = ctk.CTkLabel(inspector, text="No Specimen Selected", font=ctk.CTkFont(size=15, weight="bold"))
-        self.insp_spec.pack(anchor="w", padx=16)
-        self.insp_patient = ctk.CTkLabel(inspector, text="Click any row to inspect & verify", font=ctk.CTkFont(size=11), text_color="gray")
-        self.insp_patient.pack(anchor="w", padx=16, pady=(0, 8))
+        ctk.CTkLabel(inspector, text="CLINICAL INSPECTOR", font=ctk.CTkFont(size=12, weight="bold"), text_color="#818cf8").pack(anchor="w", padx=12, pady=(8, 2))
+        self.insp_spec = ctk.CTkLabel(inspector, text="No Specimen Selected", font=ctk.CTkFont(size=14, weight="bold"), wraplength=310, justify="left")
+        self.insp_spec.pack(anchor="w", padx=12)
+        self.insp_patient = ctk.CTkLabel(inspector, text="Click any row to inspect & verify", font=ctk.CTkFont(size=11), text_color="gray", wraplength=310, justify="left")
+        self.insp_patient.pack(anchor="w", padx=12, pady=(2, 8))
 
-        # Delta Check & Prior Info Box
+        # Delta Check & Tube Box
         delta_box = ctk.CTkFrame(inspector, fg_color=("#e2e8f0", "#090d16"), corner_radius=8)
-        delta_box.pack(fill="x", padx=14, pady=(0, 10))
-        self.insp_tube = ctk.CTkLabel(delta_box, text="Tube: -", font=ctk.CTkFont(size=11))
+        delta_box.pack(fill="x", padx=10, pady=(0, 8))
+        self.insp_tube = ctk.CTkLabel(delta_box, text="Tube: -", font=ctk.CTkFont(size=11), wraplength=295, justify="left")
         self.insp_tube.pack(anchor="w", padx=10, pady=(6, 0))
-        self.insp_prior = ctk.CTkLabel(delta_box, text="Prior Result: -", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38bdf8")
+        self.insp_prior = ctk.CTkLabel(delta_box, text="Prior Result: -", font=ctk.CTkFont(size=11, weight="bold"), text_color="#38bdf8", wraplength=295, justify="left")
         self.insp_prior.pack(anchor="w", padx=10, pady=(2, 6))
 
+        ctk.CTkButton(inspector, text="View Patient Cumulative History", height=28, font=ctk.CTkFont(size=11), fg_color="transparent", border_width=1, border_color="#4f46e5", text_color=("#4f46e5", "#818cf8"), hover_color=("#e0e7ff", "#1e1b4b"), command=self.open_patient_history_modal).pack(fill="x", padx=10, pady=(0, 10))
+
         # Animated Vector Range Gauge
-        self.range_gauge = AnimatedRangeGauge(inspector, height=48)
-        self.range_gauge.pack(fill="x", padx=14, pady=(0, 10))
+        self.range_gauge = AnimatedRangeGauge(inspector, height=64)
+        self.range_gauge.pack(fill="x", padx=10, pady=(0, 10))
 
         # Result Entry Inputs
-        ctk.CTkLabel(inspector, text="Measured Result Value:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=16)
+        ctk.CTkLabel(inspector, text="Measured Result Value:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=12)
         self.res_input = ctk.CTkEntry(inspector, placeholder_text="e.g. 6.8 or Negative", height=34)
-        self.res_input.pack(fill="x", padx=16, pady=(2, 8))
+        self.res_input.pack(fill="x", padx=12, pady=(2, 8))
 
-        ctk.CTkLabel(inspector, text="Clinical / Rejection Note:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=16)
+        ctk.CTkLabel(inspector, text="Clinical / Amendment / Rejection Note:", font=ctk.CTkFont(size=11, weight="bold")).pack(anchor="w", padx=12)
         self.note_input = ctk.CTkEntry(inspector, placeholder_text="Optional note or QNS/Hemolyzed", height=34)
-        self.note_input.pack(fill="x", padx=16, pady=(2, 12))
+        self.note_input.pack(fill="x", padx=12, pady=(2, 12))
 
-        ctk.CTkButton(inspector, text="Verify & Release Result", height=38, font=ctk.CTkFont(weight="bold"), fg_color="#10b981", hover_color="#059669", command=self.verify_result).pack(fill="x", padx=16, pady=(0, 6))
-        ctk.CTkButton(inspector, text="Reject Specimen", height=32, fg_color="#dc2626", hover_color="#b91c1c", command=self.reject_sample).pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkButton(inspector, text="Verify & Release Result", height=38, font=ctk.CTkFont(weight="bold"), fg_color="#10b981", hover_color="#059669", command=self.verify_result).pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkButton(inspector, text="Reject Specimen", height=32, fg_color="#dc2626", hover_color="#b91c1c", command=self.reject_sample).pack(fill="x", padx=12, pady=(0, 12))
 
-        # Print Actions (Report PDF & Barcode Label)
-        ctk.CTkButton(inspector, text="Print Consolidated PDF Report", height=36, font=ctk.CTkFont(weight="bold"), fg_color="#4f46e5", hover_color="#4338ca", command=self.export_specimen_report).pack(fill="x", padx=16, pady=(0, 6))
-        ctk.CTkButton(inspector, text="Print Tube Barcode Label", height=32, fg_color=("#cbd5e1", "#1e293b"), text_color=("#0f172a", "#f8fafc"), hover_color="#334155", command=self.export_barcode_label).pack(fill="x", padx=16, pady=(0, 12))
+        ctk.CTkButton(inspector, text="Print Consolidated PDF Report", height=36, font=ctk.CTkFont(weight="bold"), fg_color="#4f46e5", hover_color="#4338ca", command=self.export_specimen_report).pack(fill="x", padx=12, pady=(0, 6))
+        ctk.CTkButton(inspector, text="Print Tube Barcode Label", height=32, fg_color=("#cbd5e1", "#1e293b"), text_color=("#0f172a", "#f8fafc"), hover_color="#334155", command=self.export_barcode_label).pack(fill="x", padx=12, pady=(0, 14))
+
+    def _animate_kpi_value(self, lbl, target_num):
+        try:
+            current = int(lbl.cget("text"))
+        except ValueError:
+            current = 0
+        if current == target_num:
+            return
+        steps = 10
+        idx = [0]
+
+        def step():
+            idx[0] += 1
+            val = int(current + (target_num - current) * (idx[0] / steps))
+            lbl.configure(text=str(val))
+            if idx[0] < steps:
+                self.after(18, step)
+            else:
+                lbl.configure(text=str(target_num))
+
+        step()
 
     def _make_kpi_card(self, parent, col, title, val, accent, with_dot=False):
         card = ctk.CTkFrame(parent, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
@@ -766,7 +832,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         cur.execute("""
-            SELECT o.specimen_id, p.full_name, p.mrn, o.test_name, o.tube_type, o.status, o.result_value, o.prior_result, o.flag, o.reference_range,
+            SELECT o.specimen_id, p.patient_id, p.full_name, p.mrn, o.test_name, o.tube_type, o.status, o.result_value, o.prior_result, o.flag, o.reference_range,
                    c.low_val, c.high_val
             FROM orders o
             JOIN patients p ON o.patient_id = p.patient_id
@@ -778,14 +844,15 @@ class MonocytesDelegatesLIS(ctk.CTk):
         if not r:
             return
 
-        spec_id, p_name, mrn, test_name, tube, status, res_val, prior_val, flag, ref_range, low, high = r
+        spec_id, pat_id, p_name, mrn, test_name, tube, status, res_val, prior_val, flag, ref_range, low, high = r
+        self.selected_patient_id = pat_id
         self.insp_spec.configure(text=f"{spec_id}  •  {test_name}")
         self.insp_patient.configure(text=f"Patient: {p_name} ({mrn})")
         self.insp_tube.configure(text=f"Specimen Tube: {tube or 'Standard'}")
         self.insp_prior.configure(text=f"Prior Result: {prior_val or 'None on file'}")
 
         if status == "Pending":
-            self.range_gauge.set_state(0.0, "#4f46e5", f"Awaiting Result ({ref_range})", animate=True)
+            self.range_gauge.set_state(0.0, "#4f46e5", f"{test_name}", f"PENDING  |  Ref: {ref_range}", animate=True)
             return
 
         if "CRITICAL" in flag:
@@ -808,7 +875,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
             except (ValueError, IndexError):
                 pass
 
-        self.range_gauge.set_state(target, color, f"{res_val}  [{flag}]  |  Ref: {ref_range}", animate=True)
+        self.range_gauge.set_state(target, color, f"{test_name}: {res_val}", f"[{flag}]  |  Ref: {ref_range}", animate=True)
 
     def refresh_orders(self, reselect_id=None):
         for r in self.order_tree.get_children():
@@ -821,16 +888,16 @@ class MonocytesDelegatesLIS(ctk.CTk):
         cur = conn.cursor()
 
         cur.execute("SELECT COUNT(*) FROM orders")
-        self.kpi_total.configure(text=str(cur.fetchone()[0]))
+        self._animate_kpi_value(self.kpi_total, cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM orders WHERE status='Pending'")
-        self.kpi_pending.configure(text=str(cur.fetchone()[0]))
+        self._animate_kpi_value(self.kpi_pending, cur.fetchone()[0])
         cur.execute("SELECT COUNT(*) FROM orders WHERE priority='STAT' AND status='Pending'")
-        self.kpi_stat.configure(text=str(cur.fetchone()[0]))
-        cur.execute("SELECT COUNT(*) FROM orders WHERE status='Completed'")
-        self.kpi_done.configure(text=str(cur.fetchone()[0]))
+        self._animate_kpi_value(self.kpi_stat, cur.fetchone()[0])
+        cur.execute("SELECT COUNT(*) FROM orders WHERE status IN ('Completed', 'Amended')")
+        self._animate_kpi_value(self.kpi_done, cur.fetchone()[0])
 
         sql = """
-            SELECT o.order_id, o.specimen_id, p.full_name, o.test_name, o.priority, o.order_date, o.status, o.result_value, o.flag, o.delta_flag
+            SELECT o.order_id, o.specimen_id, p.full_name, o.test_name, o.priority, o.order_date, o.status, o.result_value, o.flag, o.delta_flag, o.verified_by
             FROM orders o JOIN patients p ON o.patient_id = p.patient_id
             WHERE (p.full_name LIKE ? OR p.mrn LIKE ? OR o.specimen_id LIKE ? OR o.test_name LIKE ?)
         """
@@ -845,8 +912,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         target_item = None
 
         for row in cur.fetchall():
-            oid, spec, pname, tname, prio, odate, status, res, flag, dflag = row
-            # Calculate Turnaround Time (TAT) SLA
+            oid, spec, pname, tname, prio, odate, status, res, flag, dflag, vby = row
             try:
                 dt = datetime.strptime(odate, "%Y-%m-%d %H:%M")
                 mins = max(0, int((now - dt).total_seconds() // 60))
@@ -865,12 +931,14 @@ class MonocytesDelegatesLIS(ctk.CTk):
                 tags = ("high",)
             elif flag == "LOW":
                 tags = ("low",)
+            elif status == "Amended":
+                tags = ("amended",)
             elif flag == "NORMAL":
                 tags = ("normal",)
             elif prio == "STAT" and status == "Pending":
                 tags = ("stat",)
 
-            item_id = self.order_tree.insert("", "end", values=(oid, spec, pname, tname, prio, tat_str, status, res, disp_flag), tags=tags)
+            item_id = self.order_tree.insert("", "end", values=(oid, spec, pname, tname, prio, tat_str, status, res, disp_flag, vby), tags=tags)
             if reselect_id and oid == reselect_id:
                 target_item = item_id
         conn.close()
@@ -881,10 +949,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
             self.on_row_select()
 
     def verify_result(self):
-        if "Reception" in self.current_role:
-            messagebox.showwarning("Access Restricted", "Phlebotomy/Reception role cannot verify clinical results. Switch to MedTech or Pathologist.")
-            return
-
         sel = self.order_tree.selection()
         if not sel:
             messagebox.showwarning("Selection Required", "Select an order row in the worklist first.")
@@ -897,17 +961,26 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         note = self.note_input.get().strip()
         item = self.order_tree.item(sel[0])["values"]
-        order_id, specimen_id, test_name = item[0], item[1], item[3]
+        order_id, specimen_id, test_name, old_status, old_res = item[0], item[1], item[3], item[6], item[7]
+
+        new_status = "Completed"
+        if old_status in ("Completed", "Amended"):
+            if not messagebox.askyesno("Amend Verified Result", f"This assay was already verified as '{old_res}'.\n\nAmend result and log audit trail?"):
+                return
+            if not note:
+                messagebox.showwarning("Amendment Reason Required", "Enter the reason for amending this result in the Note box.")
+                return
+            new_status = "Amended"
+            note = f"[AMENDED from '{old_res}'] {note}"
 
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
         cur.execute("SELECT patient_id FROM orders WHERE order_id = ?", (order_id,))
         patient_id = cur.fetchone()[0]
 
-        # Fetch prior result for Delta Check
         cur.execute("""
             SELECT result_value FROM orders
-            WHERE patient_id = ? AND test_name = ? AND status = 'Completed' AND order_id < ?
+            WHERE patient_id = ? AND test_name = ? AND status IN ('Completed', 'Amended') AND order_id < ?
             ORDER BY order_id DESC LIMIT 1
         """, (patient_id, test_name, order_id))
         prior_row = cur.fetchone()
@@ -935,7 +1008,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
                 elif high is not None and num > high:
                     flag = "HIGH"
 
-                # Delta Check evaluation
                 if prior_str != "-" and delta_pct is not None:
                     try:
                         prior_num = float(prior_str.split()[0])
@@ -949,7 +1021,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
                 if raw_val.lower() in ("positive", "abnormal", "reactive", "detected"):
                     flag = "ABNORMAL"
 
-        # Critical Value Read-Back Modal
         if is_critical:
             clinician = ctk.CTkInputDialog(
                 text=f"CRITICAL PANIC RESULT ({display_val})!\n\nAccreditation requires immediate physician notification.\nEnter Name of Notified Clinician/Nurse for Read-Back Log:",
@@ -969,19 +1040,18 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         cur.execute("""
             UPDATE orders
-            SET result_value = ?, prior_result = ?, flag = ?, delta_flag = ?, status = 'Completed',
+            SET result_value = ?, prior_result = ?, flag = ?, delta_flag = ?, status = ?,
                 notes = ?, verified_by = ?, verified_date = ?
             WHERE order_id = ?
-        """, (display_val, prior_str, flag, delta_flag, note, self.current_user, datetime.now().strftime("%Y-%m-%d %H:%M"), order_id))
+        """, (display_val, prior_str, flag, delta_flag, new_status, note, self.current_user, datetime.now().strftime("%Y-%m-%d %H:%M"), order_id))
         conn.commit()
         conn.close()
 
-        log_audit(self.current_user, self.current_role, "VERIFY_RESULT", specimen_id, f"{test_name}: {display_val} ({flag})")
+        log_audit(self.current_user, self.current_role, "AMEND_RESULT" if new_status == "Amended" else "VERIFY_RESULT", specimen_id, f"{test_name}: {display_val} ({flag})")
         self.res_input.delete(0, "end")
         self.note_input.delete(0, "end")
         self.refresh_orders(reselect_id=order_id)
 
-        # Reflex Testing Rule Check (Abnormal Urinalysis -> Urine Culture)
         if test_name == "Urinalysis (Complete)" and flag != "NORMAL":
             if messagebox.askyesno("Reflex Protocol Triggered", "Abnormal Urinalysis detected.\n\nAutomatically add 'Urine Culture & Sensitivity' to this Specimen ID?"):
                 conn = sqlite3.connect(DB_NAME)
@@ -996,9 +1066,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
                 self.refresh_orders(reselect_id=order_id)
 
     def reject_sample(self):
-        if "Reception" in self.current_role:
-            messagebox.showwarning("Access Restricted", "Switch to MedTech or Pathologist to reject specimens.")
-            return
         sel = self.order_tree.selection()
         if not sel:
             messagebox.showwarning("Selection Required", "Select a specimen row to reject.")
@@ -1022,6 +1089,44 @@ class MonocytesDelegatesLIS(ctk.CTk):
         log_audit(self.current_user, self.current_role, "REJECT_SPECIMEN", specimen_id, reason)
         self.note_input.delete(0, "end")
         self.refresh_orders(reselect_id=order_id)
+
+    def open_patient_history_modal(self, patient_id=None):
+        pid = patient_id or self.selected_patient_id
+        if not pid:
+            messagebox.showwarning("No Patient Selected", "Select an order row or patient first.")
+            return
+
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT mrn, full_name, dob, sex, physician FROM patients WHERE patient_id = ?", (pid,))
+        pat = cur.fetchone()
+        cur.execute("""
+            SELECT order_date, specimen_id, test_name, status, result_value, flag, reference_range, verified_by
+            FROM orders WHERE patient_id = ? ORDER BY order_id DESC
+        """, (pid,))
+        rows = cur.fetchall()
+        conn.close()
+
+        if not pat:
+            return
+
+        win = ctk.CTkToplevel(self)
+        win.title(f"Cumulative Lab History — {pat[1]} ({pat[0]})")
+        win.geometry("920x480")
+        win.transient(self)
+
+        hdr = ctk.CTkFrame(win, fg_color=("#e2e8f0", "#0f172a"), corner_radius=8)
+        hdr.pack(fill="x", padx=16, pady=(16, 10))
+        ctk.CTkLabel(hdr, text=f"{pat[1]}  ({pat[0]})", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=14, pady=(10, 2))
+        ctk.CTkLabel(hdr, text=f"DOB: {pat[2]}  |  Sex: {pat[3]}  |  Primary Clinician: {pat[4]}", font=ctk.CTkFont(size=12), text_color="gray").pack(anchor="w", padx=14, pady=(0, 10))
+
+        t_box = ctk.CTkFrame(win)
+        t_box.pack(fill="both", expand=True, padx=16, pady=(0, 16))
+        cols = ("Date", "Specimen ID", "Assay / Test", "Status", "Result", "Flag", "Ref Range", "Verified By")
+        widths = [125, 130, 185, 85, 100, 95, 130, 155]
+        h_tree = self._create_scrolled_treeview(t_box, cols, widths, left_align_cols=("Assay / Test", "Verified By"))
+        for r in rows:
+            h_tree.insert("", "end", values=r)
 
     def export_specimen_report(self):
         sel = self.order_tree.selection()
@@ -1117,7 +1222,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
             return
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
-            writer.writerow(["Order ID", "Specimen ID", "Patient", "Assay", "Priority", "TAT", "Status", "Result", "Flag"])
+            writer.writerow(["Order ID", "Specimen ID", "Patient", "Assay", "Priority", "TAT", "Status", "Result", "Flag", "Verified By"])
             for row_id in self.order_tree.get_children():
                 writer.writerow(self.order_tree.item(row_id)["values"])
         messagebox.showinfo("Export Complete", "Worklist log exported to CSV.")
@@ -1138,7 +1243,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         top_controls.grid(row=2, column=0, sticky="ew", padx=28, pady=(0, 12))
 
         ctk.CTkLabel(top_controls, text="Patient:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0, 8))
-        self.req_patient_menu = ctk.CTkOptionMenu(top_controls, values=["No Patients Registered"], width=320)
+        self.req_patient_menu = ctk.CTkOptionMenu(top_controls, values=["No Patients Registered"], width=360)
         self.req_patient_menu.pack(side="left", padx=(0, 24))
 
         ctk.CTkLabel(top_controls, text="Priority:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0, 8))
@@ -1146,7 +1251,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.req_priority.set("Routine")
         self.req_priority.pack(side="left")
 
-        # 1-Click Preset Panel Bar
         preset_bar = ctk.CTkFrame(frame, fg_color="transparent")
         preset_bar.grid(row=3, column=0, sticky="ew", padx=28, pady=(0, 10))
         ctk.CTkLabel(preset_bar, text="Quick Panels:", font=ctk.CTkFont(size=12, weight="bold"), text_color="#818cf8").pack(side="left", padx=(0, 10))
@@ -1250,9 +1354,9 @@ class MonocytesDelegatesLIS(ctk.CTk):
         card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         card.grid(row=0, column=0, sticky="ew", pady=(0, 16))
 
-        ctk.CTkLabel(card, text="Register New Patient", font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(12, 6))
+        ctk.CTkLabel(card, text="Register New Patient (Double-click any patient below to view cumulative lab history)", font=ctk.CTkFont(size=15, weight="bold")).grid(row=0, column=0, columnspan=6, sticky="w", padx=16, pady=(12, 6))
 
-        self.p_name = ctk.CTkEntry(card, placeholder_text="Full Name *", width=200)
+        self.p_name = ctk.CTkEntry(card, placeholder_text="Full Name *", width=220)
         self.p_name.grid(row=1, column=0, padx=(16, 8), pady=(0, 14))
 
         self.p_dob = ctk.CTkEntry(card, placeholder_text="DOB (YYYY-MM-DD)", width=140)
@@ -1264,19 +1368,23 @@ class MonocytesDelegatesLIS(ctk.CTk):
         self.p_phone = ctk.CTkEntry(card, placeholder_text="Phone Number", width=140)
         self.p_phone.grid(row=1, column=3, padx=8, pady=(0, 14))
 
-        self.p_doc = ctk.CTkEntry(card, placeholder_text="Requesting Physician", width=175)
+        self.p_doc = ctk.CTkEntry(card, placeholder_text="Requesting Physician", width=185)
         self.p_doc.grid(row=1, column=4, padx=8, pady=(0, 14))
 
         ctk.CTkButton(card, text="+ Register", width=110, fg_color="#10b981", hover_color="#059669", command=self.add_patient).grid(row=1, column=5, padx=(8, 16), pady=(0, 14))
 
         t_frame = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         t_frame.grid(row=1, column=0, sticky="nsew")
-        cols = ("ID", "MRN", "Full Name", "DOB", "Sex", "Phone", "Physician")
-        self.patient_tree = ttk.Treeview(t_frame, columns=cols, show="headings")
-        for c in cols:
-            self.patient_tree.heading(c, text=c)
-            self.patient_tree.column(c, anchor="center" if c in ("ID", "MRN", "DOB", "Sex") else "w")
-        self.patient_tree.pack(fill="both", expand=True, padx=2, pady=2)
+        cols = ("ID", "MRN", "Full Name", "DOB", "Sex", "Phone", "Requesting Physician")
+        widths = [55, 110, 230, 115, 85, 140, 220]
+        self.patient_tree = self._create_scrolled_treeview(t_frame, cols, widths, left_align_cols=("Full Name", "Requesting Physician"))
+        self.patient_tree.bind("<Double-1>", self._on_patient_double_click)
+
+    def _on_patient_double_click(self, _event=None):
+        sel = self.patient_tree.selection()
+        if sel:
+            pid = self.patient_tree.item(sel[0])["values"][0]
+            self.open_patient_history_modal(patient_id=pid)
 
     def add_patient(self):
         name = self.p_name.get().strip()
@@ -1333,26 +1441,18 @@ class MonocytesDelegatesLIS(ctk.CTk):
 
         ctk.CTkButton(top_card, text="Log QC Run & Evaluate Westgard", fg_color="#4f46e5", hover_color="#4338ca", command=self.log_qc_run).grid(row=1, column=2, padx=10, pady=(0, 14))
 
-        # Levey-Jennings Chart Card
         chart_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         chart_card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
         self.lj_canvas = LeveyJenningsCanvas(chart_card)
         self.lj_canvas.pack(fill="both", expand=True, padx=4, pady=4)
 
-        # QC History Table
         hist_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         hist_card.grid(row=2, column=0, sticky="nsew")
         cols = ("QC ID", "Assay", "Control Level", "Measured", "Target Mean", "Z-Score", "Westgard Rule", "Operator", "Timestamp")
-        self.qc_tree = ttk.Treeview(hist_card, columns=cols, show="headings", height=5)
-        for c in cols:
-            self.qc_tree.heading(c, text=c)
-            self.qc_tree.column(c, anchor="center", width=110)
-        self.qc_tree.pack(fill="both", expand=True, padx=2, pady=2)
+        widths = [65, 190, 145, 90, 95, 80, 175, 175, 135]
+        self.qc_tree = self._create_scrolled_treeview(hist_card, cols, widths, left_align_cols=("Assay", "Operator"))
 
     def log_qc_run(self):
-        if "Reception" in self.current_role:
-            messagebox.showwarning("Access Restricted", "Switch to MedTech or Pathologist to log QC runs.")
-            return
         key = self.qc_combo.get()
         try:
             val = float(self.qc_val_entry.get().strip())
@@ -1419,7 +1519,7 @@ class MonocytesDelegatesLIS(ctk.CTk):
         add_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         add_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
 
-        ctk.CTkLabel(add_card, text="Add Custom Assay, Tube Type & Critical Panic Thresholds", font=ctk.CTkFont(size=15, weight="bold")).grid(row=0, column=0, columnspan=8, sticky="w", padx=16, pady=(12, 6))
+        ctk.CTkLabel(add_card, text="Add Custom Assay, Tube Type & Critical Panic Thresholds", font=ctk.CTkFont(size=15, weight="bold")).grid(row=0, column=0, columnspan=9, sticky="w", padx=16, pady=(12, 6))
 
         self.c_name = ctk.CTkEntry(add_card, placeholder_text="Assay Name *", width=165)
         self.c_name.grid(row=1, column=0, padx=(16, 4), pady=(0, 14))
@@ -1450,17 +1550,10 @@ class MonocytesDelegatesLIS(ctk.CTk):
         t_frame = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
         t_frame.grid(row=1, column=0, sticky="nsew")
         cols = ("ID", "Assay Name", "Dept", "Unit", "Low", "High", "Crit Low", "Crit High", "Tube", "Reference Interval")
-        self.cat_tree = ttk.Treeview(t_frame, columns=cols, show="headings")
-        widths = [40, 185, 105, 70, 60, 60, 65, 65, 115, 145]
-        for c, w in zip(cols, widths):
-            self.cat_tree.heading(c, text=c)
-            self.cat_tree.column(c, width=w, anchor="center" if c != "Assay Name" else "w")
-        self.cat_tree.pack(fill="both", expand=True, padx=2, pady=2)
+        widths = [45, 210, 115, 75, 65, 65, 70, 75, 135, 155]
+        self.cat_tree = self._create_scrolled_treeview(t_frame, cols, widths, left_align_cols=("Assay Name",))
 
     def add_assay(self):
-        if "Director" not in self.current_role and "Technologist" not in self.current_role:
-            messagebox.showwarning("Access Restricted", "Only Pathologists or MedTechs can edit the Test Catalog.")
-            return
         name = self.c_name.get().strip()
         ref = self.c_ref.get().strip()
         if not name or not ref:
@@ -1502,38 +1595,91 @@ class MonocytesDelegatesLIS(ctk.CTk):
         conn.close()
 
     # ==========================================
-    # VIEW 6: IMMUTABLE AUDIT LOG & SYSTEM TOOLS
+    # VIEW 6: AUDIT TRAIL, STAFF ROSTER & DB ADMIN
     # ==========================================
     def build_audit_frame(self):
         frame = ctk.CTkFrame(self, fg_color="transparent")
         self.frames["audit"] = frame
-        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=2)
+        frame.grid_columnconfigure(1, weight=1)
         frame.grid_rowconfigure(1, weight=1)
 
         top_bar = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
-        top_bar.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        top_bar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
 
-        ctk.CTkLabel(top_bar, text="Chain-of-Custody Audit Log & Database Administration", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=16, pady=14)
-
+        ctk.CTkLabel(top_bar, text="Chain-of-Custody Audit Log & Staff Roster", font=ctk.CTkFont(size=16, weight="bold")).pack(side="left", padx=16, pady=14)
         ctk.CTkButton(top_bar, text="Backup Database (.db)", fg_color="#10b981", hover_color="#059669", command=self.backup_database).pack(side="right", padx=16, pady=12)
-        ctk.CTkButton(top_bar, text="Load Sample Clinical Cases", fg_color="#4f46e5", hover_color="#4338ca", command=self.seed_demo_data).pack(side="right", padx=6, pady=12)
 
+        # Left: Audit Log Table
         t_frame = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
-        t_frame.grid(row=1, column=0, sticky="nsew")
+        t_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         cols = ("Audit ID", "Timestamp", "Operator", "Role", "Action", "Reference ID", "Details")
-        self.audit_tree = ttk.Treeview(t_frame, columns=cols, show="headings")
-        widths = [65, 145, 145, 145, 130, 135, 250]
-        for c, w in zip(cols, widths):
-            self.audit_tree.heading(c, text=c)
-            self.audit_tree.column(c, width=w, anchor="center" if c not in ("Details", "Operator") else "w")
-        self.audit_tree.pack(fill="both", expand=True, padx=2, pady=2)
+        widths = [65, 145, 175, 170, 130, 130, 260]
+        self.audit_tree = self._create_scrolled_treeview(t_frame, cols, widths, left_align_cols=("Operator", "Role", "Details"))
+
+        # Right: Staff & PIN Manager (Pathologist / Admin Control)
+        staff_card = ctk.CTkFrame(frame, corner_radius=12, border_width=1, border_color=("#cbd5e1", "#1e293b"))
+        staff_card.grid(row=1, column=1, sticky="nsew")
+        staff_card.grid_rowconfigure(3, weight=1)
+        staff_card.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(staff_card, text="Registered Laboratory Staff", font=ctk.CTkFont(size=14, weight="bold"), text_color="#818cf8").grid(row=0, column=0, sticky="w", padx=14, pady=(12, 4))
+
+        add_box = ctk.CTkFrame(staff_card, fg_color="transparent")
+        add_box.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        self.s_pin = ctk.CTkEntry(add_box, placeholder_text="PIN", width=70)
+        self.s_pin.pack(side="left", padx=(0, 4))
+        self.s_name = ctk.CTkEntry(add_box, placeholder_text="Full Name & Title", width=155)
+        self.s_name.pack(side="left", padx=4)
+        self.s_role = ctk.CTkOptionMenu(add_box, values=["Medical Technologist (RMT)", "Pathologist"], width=120)
+        self.s_role.pack(side="left", padx=(4, 0))
+
+        ctk.CTkButton(staff_card, text="+ Add / Update Staff PIN", height=30, fg_color="#4f46e5", hover_color="#4338ca", command=self.add_staff_member).grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 8))
+
+        s_table_wrap = ctk.CTkFrame(staff_card, fg_color="transparent")
+        s_table_wrap.grid(row=3, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        self.staff_tree = self._create_scrolled_treeview(s_table_wrap, ("PIN", "Staff Member", "Role"), [60, 180, 165], left_align_cols=("Staff Member", "Role"))
+
+    def add_staff_member(self):
+        if "Pathologist" not in self.current_role:
+            messagebox.showwarning("Pathologist Required", "Only the Pathologist (Gaia Aubrey Manalo, MD) can add or modify staff PINs.")
+            return
+        pin = self.s_pin.get().strip()
+        name = self.s_name.get().strip()
+        role = self.s_role.get()
+        if not pin or not name:
+            messagebox.showwarning("Required", "Both PIN and Full Name are required.")
+            return
+
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("INSERT OR REPLACE INTO staff (pin, full_name, role) VALUES (?, ?, ?)", (pin, name, role))
+        conn.commit()
+        conn.close()
+
+        log_audit(self.current_user, self.current_role, "UPDATE_STAFF", f"PIN-{pin[:2]}**", f"{name} ({role})")
+        self.s_pin.delete(0, "end")
+        self.s_name.delete(0, "end")
+        self.refresh_staff_list()
+        self.refresh_audit()
+
+    def refresh_staff_list(self):
+        for r in self.staff_tree.get_children():
+            self.staff_tree.delete(r)
+        conn = sqlite3.connect(DB_NAME)
+        cur = conn.cursor()
+        cur.execute("SELECT pin, full_name, role FROM staff ORDER BY pin ASC")
+        for pin, name, role in cur.fetchall():
+            masked = f"{pin[:2]}**" if "Pathologist" not in self.current_role else pin
+            self.staff_tree.insert("", "end", values=(masked, name, role))
+        conn.close()
 
     def refresh_audit(self):
         for r in self.audit_tree.get_children():
             self.audit_tree.delete(r)
         conn = sqlite3.connect(DB_NAME)
         cur = conn.cursor()
-        cur.execute("SELECT * FROM audit_log ORDER BY audit_id DESC LIMIT 200")
+        cur.execute("SELECT * FROM audit_log ORDER BY audit_id DESC LIMIT 250")
         for row in cur.fetchall():
             self.audit_tree.insert("", "end", values=row)
         conn.close()
@@ -1549,50 +1695,6 @@ class MonocytesDelegatesLIS(ctk.CTk):
             log_audit(self.current_user, self.current_role, "DB_BACKUP", os.path.basename(dest), "Full database snapshot saved")
             self.refresh_audit()
             messagebox.showinfo("Backup Complete", f"Database safely backed up to:\n{dest}")
-
-    def seed_demo_data(self):
-        conn = sqlite3.connect(DB_NAME)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM patients")
-        if cur.fetchone()[0] > 0:
-            if not messagebox.askyesno("Add Demo Cases", "Append sample clinical cases to your current database?"):
-                conn.close()
-                return
-
-        now = datetime.now()
-        earlier = (now - timedelta(days=14)).strftime("%Y-%m-%d %H:%M")
-        today = now.strftime("%Y-%m-%d %H:%M")
-
-        cur.execute("INSERT OR IGNORE INTO patients (mrn, full_name, dob, sex, phone, physician) VALUES ('MRN-2001', 'Elena Vance', '1988-04-12', 'Female', '555-0148', 'Dr. K. Vance')")
-        p1_id = cur.lastrowid or 1
-        cur.execute("INSERT OR IGNORE INTO patients (mrn, full_name, dob, sex, phone, physician) VALUES ('MRN-2002', 'Marcus Thorne', '1974-09-23', 'Male', '555-0192', 'Dr. H. Mercer')")
-        p2_id = cur.lastrowid or 2
-
-        # Historical completed order for Delta Check comparison
-        cur.execute("""
-            INSERT INTO orders (specimen_id, patient_id, test_name, department, tube_type, priority, status, result_value, prior_result, flag, reference_range, verified_by, order_date, verified_date)
-            VALUES ('MDL-PRIOR-001', ?, 'Hemoglobin (Hgb)', 'Hematology', 'Lavender (EDTA)', 'Routine', 'Completed', '13.5 g/dL', '-', 'NORMAL', '12.0 - 17.5 g/dL', 'M. Reyes, RMT', ?, ?)
-        """, (p1_id, earlier, earlier))
-
-        # Active Pending STAT & Routine orders
-        cur.execute("""
-            INSERT INTO orders (specimen_id, patient_id, test_name, department, tube_type, priority, status, result_value, prior_result, flag, reference_range, order_date)
-            VALUES ('MDL-DEMO-101', ?, 'Hemoglobin (Hgb)', 'Hematology', 'Lavender (EDTA)', 'STAT', 'Pending', '', '13.5 g/dL', '', '12.0 - 17.5 g/dL', ?)
-        """, (p1_id, today))
-        cur.execute("""
-            INSERT INTO orders (specimen_id, patient_id, test_name, department, tube_type, priority, status, result_value, prior_result, flag, reference_range, order_date)
-            VALUES ('MDL-DEMO-101', ?, 'Monocytes (Absolute)', 'Hematology', 'Lavender (EDTA)', 'STAT', 'Pending', '', '-', '', '0.2 - 0.8 x10^9/L', ?)
-        """, (p1_id, today))
-        cur.execute("""
-            INSERT INTO orders (specimen_id, patient_id, test_name, department, tube_type, priority, status, result_value, prior_result, flag, reference_range, order_date)
-            VALUES ('MDL-DEMO-102', ?, 'Fasting Blood Glucose', 'Chemistry', 'Gold (SST)', 'Routine', 'Completed', '92 mg/dL', '-', 'NORMAL', '70 - 99 mg/dL', ?)
-        """, (p2_id, today))
-
-        conn.commit()
-        conn.close()
-        log_audit(self.current_user, self.current_role, "SEED_DEMO", "MDL-DEMO", "Loaded sample clinical cases")
-        self.refresh_audit()
-        messagebox.showinfo("Demo Data Loaded", "Sample patients and STAT/Routine orders added! Switch to Worklist & Verification to test.")
 
 if __name__ == "__main__":
     init_db()
