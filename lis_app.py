@@ -22,20 +22,21 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import (
     QPainter, QColor, QPen, QLinearGradient,
-    QFont, QKeySequence, QShortcut
+    QFont, QKeySequence, QShortcut, QBrush
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QPushButton, QLineEdit, QComboBox, QPlainTextEdit,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QSplitter,
-    QFrame, QScrollArea, QStackedWidget, QDialog,
-    QMessageBox, QFileDialog, QCheckBox, QAbstractItemView, QGraphicsDropShadowEffect,
-    QSizePolicy
+    QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem,
+    QHeaderView, QTabWidget, QSplitter, QFrame, QScrollArea, QStackedWidget,
+    QDialog, QMessageBox, QFileDialog, QCheckBox, QAbstractItemView,
+    QGraphicsDropShadowEffect, QSizePolicy
 )
 from fpdf import FPDF
 
 APP_TITLE = "Monocytes Delegates LIS"
 DB_NAME = "monocytes_delegates_lis_v4.db"
+ADMIN_MODE_PIN = "0000"
 
 INITIAL_STAFF = [
     ("0001", "Carlyle Dioleste, RMT", "Medical Technologist (RMT)"),
@@ -162,7 +163,7 @@ TUBE_COLORS = {
 }
 
 APP_QSS = """
-QMainWindow, QWidget#RootCanvas {
+QMainWindow, QWidget#RootCanvas, QDialog, QMessageBox {
     background-color: #080C15;
     color: #E2E8F0;
     font-family: "Segoe UI", "Inter", sans-serif;
@@ -171,6 +172,20 @@ QMainWindow, QWidget#RootCanvas {
 QWidget {
     color: #E2E8F0;
     font-family: "Segoe UI", "Inter", sans-serif;
+}
+QMessageBox {
+    background-color: #0E1424;
+    border: 1px solid #334155;
+}
+QMessageBox QLabel {
+    color: #F8FAFC;
+    background-color: transparent;
+    font-size: 10pt;
+    padding: 4px;
+}
+QMessageBox QPushButton {
+    min-width: 86px;
+    padding: 7px 14px;
 }
 QFrame#SurfaceCard {
     background-color: #0E1424;
@@ -293,6 +308,14 @@ QPushButton#DangerBtn {
 QPushButton#DangerBtn:hover {
     background-color: #9F1239;
 }
+QPushButton#AdminActiveBtn {
+    background-color: #1E3A8A;
+    border: 1px solid #60A5FA;
+    color: #DBEAFE;
+}
+QPushButton#AdminActiveBtn:hover {
+    background-color: #1D4ED8;
+}
 QPushButton#KeypadBtn {
     background-color: #111827;
     border: 1px solid #263348;
@@ -340,7 +363,7 @@ QTabBar::tab:hover:!selected {
     background-color: #0F172A;
     color: #E2E8F0;
 }
-QTableWidget {
+QTableWidget, QTreeWidget {
     background-color: #090E1A;
     alternate-background-color: #0C1322;
     gridline-color: #172033;
@@ -348,9 +371,18 @@ QTableWidget {
     border-radius: 8px;
     selection-background-color: #1D4ED8;
     selection-color: #FFFFFF;
+    outline: 0;
 }
-QTableWidget::item {
+QTableWidget::item, QTreeWidget::item {
     padding: 6px 8px;
+    border-bottom: 1px solid #131C30;
+}
+QTreeWidget::item:selected {
+    background-color: #1D4ED8;
+    color: #FFFFFF;
+}
+QTreeWidget::item:hover:!selected {
+    background-color: #111A2E;
 }
 QHeaderView::section {
     background-color: #0F172A;
@@ -441,6 +473,34 @@ def apply_dark_titlebar(widget: QWidget):
         )
     except Exception:
         pass
+
+
+def _styled_msgbox(parent: QWidget, icon: QMessageBox.Icon, title: str, text: str, buttons=QMessageBox.Ok) -> QMessageBox:
+    box = QMessageBox(parent)
+    box.setIcon(icon)
+    box.setWindowTitle(title)
+    box.setText(text)
+    box.setStandardButtons(buttons)
+    box.setStyleSheet(APP_QSS)
+    apply_dark_titlebar(box)
+    return box
+
+
+def show_info(parent: QWidget, title: str, text: str):
+    _styled_msgbox(parent, QMessageBox.Information, title, text).exec()
+
+
+def show_warn(parent: QWidget, title: str, text: str):
+    _styled_msgbox(parent, QMessageBox.Warning, title, text).exec()
+
+
+def show_error(parent: QWidget, title: str, text: str):
+    _styled_msgbox(parent, QMessageBox.Critical, title, text).exec()
+
+
+def ask_confirm(parent: QWidget, title: str, text: str) -> bool:
+    res = _styled_msgbox(parent, QMessageBox.Question, title, text, QMessageBox.Yes | QMessageBox.No).exec()
+    return res == QMessageBox.Yes
 
 
 def get_conn():
@@ -659,7 +719,7 @@ class VectorRangeGauge(QWidget):
         self.high_lbl = "-"
 
         self.anim = QVariantAnimation(self)
-        self.anim.setDuration(320)
+        self.anim.setDuration(420)
         self.anim.setEasingCurve(QEasingCurve.OutCubic)
         self.anim.valueChanged.connect(self._on_step)
 
@@ -667,7 +727,7 @@ class VectorRangeGauge(QWidget):
         self.norm_pos = float(v)
         self.update()
 
-    def set_reading(self, val_str: str, low_val, high_val, crit_low, crit_high, flag: str):
+    def set_reading(self, val_str: str, low_val, high_val, crit_low, crit_high, flag: str, animate_from_center: bool = False):
         self.flag_text = flag or "PENDING"
         self.low_lbl = f"{low_val:g}" if low_val is not None else "-"
         self.high_lbl = f"{high_val:g}" if high_val is not None else "-"
@@ -697,10 +757,15 @@ class VectorRangeGauge(QWidget):
         except Exception:
             target = 0.5 if self.flag_text in ("NORMAL", "PENDING") else 0.85
 
+        start_pos = 0.5 if animate_from_center else self.norm_pos
+        if abs(start_pos - target) < 0.01 and animate_from_center:
+            start_pos = 0.12
+
         self.anim.stop()
-        self.anim.setStartValue(self.norm_pos)
+        self.anim.setStartValue(start_pos)
         self.anim.setEndValue(target)
         self.anim.start()
+        self.update()
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -802,6 +867,77 @@ class MplCanvas(FigureCanvas):
         ax.title.set_color("#F8FAFC")
         ax.xaxis.label.set_color("#94A3B8")
         ax.yaxis.label.set_color("#94A3B8")
+
+
+# ==============================================================================
+# ADMIN MODE PIN DIALOG
+# ==============================================================================
+
+class AdminPinDialog(QDialog):
+    """Clean dark-themed PIN prompt for unlocking Admin Mode."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Admin Mode Access")
+        self.setFixedWidth(360)
+        self.setStyleSheet(APP_QSS)
+        apply_dark_titlebar(self)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(22, 20, 22, 20)
+        lay.setSpacing(12)
+
+        title = QLabel("Admin Mode Authentication")
+        title.setObjectName("SectionHeader")
+        lay.addWidget(title)
+
+        desc = QLabel("Enter the 4-digit Admin PIN to access Reports, Staff Roster, and Audit Logs.")
+        desc.setObjectName("MutedLabel")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+
+        self.in_pin = QLineEdit()
+        self.in_pin.setPlaceholderText("••••")
+        self.in_pin.setEchoMode(QLineEdit.Password)
+        self.in_pin.setMaxLength(4)
+        self.in_pin.setAlignment(Qt.AlignCenter)
+        self.in_pin.setStyleSheet("""
+            QLineEdit {
+                font-family: 'Consolas', monospace;
+                font-size: 16pt;
+                font-weight: 700;
+                letter-spacing: 8px;
+                padding: 10px;
+            }
+        """)
+        self.in_pin.returnPressed.connect(self._check_pin)
+        lay.addWidget(self.in_pin)
+
+        self.lbl_err = QLabel("")
+        self.lbl_err.setStyleSheet("color: #FB7185; font-size: 9pt; font-weight: 600;")
+        self.lbl_err.setVisible(False)
+        lay.addWidget(self.lbl_err)
+
+        btn_row = QHBoxLayout()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_ok = QPushButton("Unlock Admin Mode")
+        btn_ok.setObjectName("PrimaryBtn")
+        btn_ok.clicked.connect(self._check_pin)
+        btn_row.addWidget(btn_cancel, 1)
+        btn_row.addWidget(btn_ok, 2)
+        lay.addLayout(btn_row)
+
+        self.in_pin.setFocus()
+
+    def _check_pin(self):
+        if self.in_pin.text().strip() == ADMIN_MODE_PIN:
+            self.accept()
+        else:
+            self.lbl_err.setText("Incorrect Admin PIN.")
+            self.lbl_err.setVisible(True)
+            self.in_pin.clear()
+            self.in_pin.setFocus()
 
 
 # ==============================================================================
@@ -1844,6 +1980,8 @@ class MainWorkspace(QWidget):
         self.qc_lockout_enabled = False
         self.failed_qc_tests = set()
         self.editing_patient_id = None
+        self.admin_mode = False
+        self.collapsed_specimens = set()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1855,7 +1993,7 @@ class MainWorkspace(QWidget):
         top_bar.setFixedHeight(52)
         tb_lay = QHBoxLayout(top_bar)
         tb_lay.setContentsMargins(16, 6, 16, 6)
-        tb_lay.setSpacing(12)
+        tb_lay.setSpacing(10)
 
         lbl_logo = QLabel("Monocytes Delegates LIS")
         lbl_logo.setStyleSheet("color: #F8FAFC; font-size: 12pt; font-weight: 700;")
@@ -1878,12 +2016,16 @@ class MainWorkspace(QWidget):
         op_full = f"{self.user['name']}  •  {role_short}"
         lbl_op = QLabel(op_full)
         lbl_op.setToolTip(op_full)
-        lbl_op.setMaximumWidth(320)
+        lbl_op.setMaximumWidth(310)
         lbl_op.setStyleSheet(
             "background-color: #131C31; border: 1px solid #334155; color: #E2E8F0; "
             "border-radius: 6px; padding: 4px 12px; font-weight: 600;"
         )
         tb_lay.addWidget(lbl_op)
+
+        self.btn_admin_mode = QPushButton("Admin Mode")
+        self.btn_admin_mode.clicked.connect(self._toggle_admin_mode)
+        tb_lay.addWidget(self.btn_admin_mode)
 
         btn_lock = QPushButton("Lock / Switch User")
         btn_lock.setObjectName("DangerBtn")
@@ -1892,7 +2034,7 @@ class MainWorkspace(QWidget):
 
         root.addWidget(top_bar)
 
-        # Main Tabbed Workspace
+        # Main Tabbed Workspace (Reports & Admin hidden until Admin Mode is unlocked)
         body = QWidget()
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(12, 10, 12, 12)
@@ -1905,7 +2047,7 @@ class MainWorkspace(QWidget):
         self.tabs.addTab(self._build_pathologist_tab(), "Pathologist Review")
         self.tabs.addTab(self._build_qc_tab(), "Quality Control")
         self.tabs.addTab(self._build_catalog_tab(), "Test Catalog")
-        self.tabs.addTab(self._build_admin_tab(), "Reports & Admin")
+        self.admin_tab_widget = self._build_admin_tab()
         body_lay.addWidget(self.tabs, 1)
 
         root.addWidget(body, 1)
@@ -1920,6 +2062,31 @@ class MainWorkspace(QWidget):
 
         self.refresh_all()
 
+    def _toggle_admin_mode(self):
+        if self.admin_mode:
+            self.admin_mode = False
+            idx = self.tabs.indexOf(self.admin_tab_widget)
+            if idx >= 0:
+                self.tabs.removeTab(idx)
+            self.btn_admin_mode.setText("Admin Mode")
+            self.btn_admin_mode.setObjectName("")
+            self.btn_admin_mode.style().unpolish(self.btn_admin_mode)
+            self.btn_admin_mode.style().polish(self.btn_admin_mode)
+            log_audit(self.user["name"], "ADMIN_MODE_DISABLED", "-", "Exited Admin Mode")
+            return
+
+        dlg = AdminPinDialog(self)
+        if dlg.exec() == QDialog.Accepted:
+            self.admin_mode = True
+            if self.tabs.indexOf(self.admin_tab_widget) < 0:
+                self.tabs.addTab(self.admin_tab_widget, "Reports & Admin")
+            self.tabs.setCurrentWidget(self.admin_tab_widget)
+            self.btn_admin_mode.setText("Admin Mode: ON")
+            self.btn_admin_mode.setObjectName("AdminActiveBtn")
+            self.btn_admin_mode.style().unpolish(self.btn_admin_mode)
+            self.btn_admin_mode.style().polish(self.btn_admin_mode)
+            log_audit(self.user["name"], "ADMIN_MODE_ENABLED", "-", "Unlocked Admin Mode (PIN 0000)")
+
     def _update_clock(self):
         self.lbl_clock.setText(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))
 
@@ -1929,7 +2096,7 @@ class MainWorkspace(QWidget):
         self.in_search.selectAll()
 
     # --------------------------------------------------------------------------
-    # TAB 1: WORKLIST & CLINICAL INSPECTOR
+    # TAB 1: WORKLIST (GROUPED BY PATIENT/SPECIMEN) & CLINICAL INSPECTOR
     # --------------------------------------------------------------------------
     def _build_worklist_tab(self) -> QWidget:
         w = QWidget()
@@ -1961,6 +2128,16 @@ class MainWorkspace(QWidget):
         self.cmb_status_filter.currentTextChanged.connect(self.refresh_worklist)
         flt.addWidget(self.cmb_status_filter, 1)
 
+        btn_exp_all = QPushButton("Expand All")
+        btn_exp_all.setToolTip("Expand all grouped patient orders")
+        btn_exp_all.clicked.connect(self._expand_all_groups)
+        flt.addWidget(btn_exp_all)
+
+        btn_col_all = QPushButton("Minimize All")
+        btn_col_all.setToolTip("Minimize all grouped patient orders")
+        btn_col_all.clicked.connect(self._collapse_all_groups)
+        flt.addWidget(btn_col_all)
+
         self.lbl_queue_counts = QLabel("Total: 0  |  Pending: 0  |  STAT: 0  |  Verified: 0")
         self.lbl_queue_counts.setObjectName("MonoBadge")
         flt.addWidget(self.lbl_queue_counts)
@@ -1974,30 +2151,33 @@ class MainWorkspace(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
 
-        # Left: Live Worklist Table
-        self.tbl_worklist = QTableWidget(0, 9)
-        self.tbl_worklist.setHorizontalHeaderLabels([
-            "ID", "Specimen ID", "Patient Name", "Test / Assay", "Department", "Priority", "TAT", "Result", "Status"
+        # Left: Collapsible Grouped Worklist Tree
+        self.tbl_worklist = QTreeWidget()
+        self.tbl_worklist.setColumnCount(8)
+        self.tbl_worklist.setHeaderLabels([
+            "Specimen ID", "Patient Name", "Test / Assay", "Department", "Priority", "TAT", "Result", "Status"
         ])
-        self.tbl_worklist.setColumnHidden(0, True)
-        hdr = self.tbl_worklist.horizontalHeader()
+        hdr = self.tbl_worklist.header()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
-        self.tbl_worklist.setColumnWidth(1, 130)
-        self.tbl_worklist.setColumnWidth(2, 175)
-        self.tbl_worklist.setColumnWidth(3, 195)
-        self.tbl_worklist.setColumnWidth(4, 125)
-        self.tbl_worklist.setColumnWidth(5, 72)
-        self.tbl_worklist.setColumnWidth(6, 78)
-        self.tbl_worklist.setColumnWidth(7, 105)
+        self.tbl_worklist.setColumnWidth(0, 155)
+        self.tbl_worklist.setColumnWidth(1, 180)
+        self.tbl_worklist.setColumnWidth(2, 200)
+        self.tbl_worklist.setColumnWidth(3, 125)
+        self.tbl_worklist.setColumnWidth(4, 72)
+        self.tbl_worklist.setColumnWidth(5, 78)
+        self.tbl_worklist.setColumnWidth(6, 110)
         self.tbl_worklist.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_worklist.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_worklist.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_worklist.setAlternatingRowColors(True)
-        self.tbl_worklist.setWordWrap(True)
+        self.tbl_worklist.setUniformRowHeights(False)
+        self.tbl_worklist.setIndentation(18)
         self.tbl_worklist.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tbl_worklist.itemSelectionChanged.connect(self._on_worklist_select)
-        self.tbl_worklist.doubleClicked.connect(lambda: self.in_result.setFocus())
+        self.tbl_worklist.itemExpanded.connect(self._on_group_expanded)
+        self.tbl_worklist.itemCollapsed.connect(self._on_group_collapsed)
+        self.tbl_worklist.itemDoubleClicked.connect(self._on_worklist_double_click)
         splitter.addWidget(self.tbl_worklist)
 
         # Right: Scrollable Specimen Inspector & Result Entry
@@ -2108,13 +2288,50 @@ class MainWorkspace(QWidget):
         lay.addWidget(splitter, 1)
         return w
 
-    def _on_worklist_select(self):
-        rows = self.tbl_worklist.selectionModel().selectedRows()
-        if not rows:
-            return
-        order_id = int(self.tbl_worklist.item(rows[0].row(), 0).text())
-        self.selected_order_id = order_id
+    def _expand_all_groups(self):
+        self.collapsed_specimens.clear()
+        self.tbl_worklist.expandAll()
 
+    def _collapse_all_groups(self):
+        for i in range(self.tbl_worklist.topLevelItemCount()):
+            top = self.tbl_worklist.topLevelItem(i)
+            if top.childCount() > 0:
+                spec_id = top.data(0, Qt.UserRole + 1)
+                if spec_id:
+                    self.collapsed_specimens.add(spec_id)
+                top.setExpanded(False)
+
+    def _on_group_expanded(self, item: QTreeWidgetItem):
+        spec_id = item.data(0, Qt.UserRole + 1)
+        if spec_id:
+            self.collapsed_specimens.discard(spec_id)
+
+    def _on_group_collapsed(self, item: QTreeWidgetItem):
+        spec_id = item.data(0, Qt.UserRole + 1)
+        if spec_id:
+            self.collapsed_specimens.add(spec_id)
+
+    def _on_worklist_double_click(self, item: QTreeWidgetItem, col: int):
+        if item.childCount() > 0:
+            item.setExpanded(not item.isExpanded())
+        else:
+            self.in_result.setFocus()
+            self.in_result.selectAll()
+
+    def _on_worklist_select(self):
+        items = self.tbl_worklist.selectedItems()
+        if not items:
+            return
+        item = items[0]
+        order_id = item.data(0, Qt.UserRole)
+        if order_id is None and item.childCount() > 0:
+            order_id = item.child(0).data(0, Qt.UserRole)
+        if order_id is None:
+            return
+        self._load_inspector_order(int(order_id), animate_from_center=False)
+
+    def _load_inspector_order(self, order_id: int, animate_from_center: bool = False):
+        self.selected_order_id = order_id
         conn = get_conn()
         o = conn.execute("""
             SELECT o.*, p.full_name, p.mrn, p.sex, p.dob, t.low_val, t.high_val, t.crit_low, t.crit_high
@@ -2140,27 +2357,30 @@ class MainWorkspace(QWidget):
         self.in_notes.setText(o["notes"] or "")
         self.range_gauge.set_reading(
             o["result_value"] or "", o["low_val"], o["high_val"], o["crit_low"], o["crit_high"],
-            o["flag"] or o["status"]
+            o["flag"] or o["status"], animate_from_center=animate_from_center
         )
 
     def _advance_stage(self, stage: str):
         if not self.selected_order_id:
             return
+        target_id = self.selected_order_id
         conn = get_conn()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         if stage == "Collected":
-            conn.execute("UPDATE orders SET status = ?, collected_at = COALESCE(collected_at, ?) WHERE id = ?", (stage, now, self.selected_order_id))
+            conn.execute("UPDATE orders SET status = ?, collected_at = COALESCE(collected_at, ?) WHERE id = ?", (stage, now, target_id))
         else:
-            conn.execute("UPDATE orders SET status = ? WHERE id = ?", (stage, self.selected_order_id))
-        row = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
+            conn.execute("UPDATE orders SET status = ? WHERE id = ?", (stage, target_id))
+        row = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
         conn.commit()
         conn.close()
-        log_audit(self.user["name"], f"STAGE_{stage.upper()}", row["specimen_id"] if row else "-", f"Order #{self.selected_order_id}")
+        log_audit(self.user["name"], f"STAGE_{stage.upper()}", row["specimen_id"] if row else "-", f"Order #{target_id}")
         self.refresh_all()
+        self._load_inspector_order(target_id, animate_from_center=False)
 
     def _assign_storage_slot(self):
         if not self.selected_order_id:
             return
+        target_id = self.selected_order_id
         dlg = QDialog(self)
         dlg.setWindowTitle("Assign Specimen Storage Slot")
         dlg.setStyleSheet(APP_QSS)
@@ -2179,10 +2399,11 @@ class MainWorkspace(QWidget):
         if dlg.exec() == QDialog.Accepted:
             slot = f"{cmb_u.currentText()} ({in_pos.text().strip()})"
             conn = get_conn()
-            conn.execute("UPDATE orders SET storage_slot = ? WHERE id = ?", (slot, self.selected_order_id))
+            conn.execute("UPDATE orders SET storage_slot = ? WHERE id = ?", (slot, target_id))
             conn.commit()
             conn.close()
             self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=False)
 
     def _open_calculators(self):
         dlg = RmtCalculatorDialog(self)
@@ -2192,16 +2413,17 @@ class MainWorkspace(QWidget):
 
     def _open_wbc_diff(self):
         if not self.selected_order_id:
-            QMessageBox.information(self, "Select Specimen", "Select a Hematology / CBC / PBS order first.")
+            show_info(self, "Select Specimen", "Select a Hematology / CBC / PBS order first.")
             return
+        target_id = self.selected_order_id
         conn = get_conn()
-        o = conn.execute("SELECT diff_json, specimen_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
+        o = conn.execute("SELECT diff_json, specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
         conn.close()
         dlg = WbcDiffCounterDialog(o["diff_json"] or "", self)
         if dlg.exec() == QDialog.Accepted:
             raw_json, summary, morph = dlg.export_payload()
             conn = get_conn()
-            conn.execute("UPDATE orders SET diff_json = ? WHERE id = ?", (raw_json, self.selected_order_id))
+            conn.execute("UPDATE orders SET diff_json = ? WHERE id = ?", (raw_json, target_id))
             conn.commit()
             conn.close()
             if not self.in_result.text().strip():
@@ -2209,48 +2431,52 @@ class MainWorkspace(QWidget):
             self.in_notes.setText(morph)
             log_audit(self.user["name"], "WBC_DIFF_SAVED", o["specimen_id"], summary)
             self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=False)
 
     def _open_antibiogram(self):
         if not self.selected_order_id:
-            QMessageBox.information(self, "Select Specimen", "Select a Microbiology / Culture order first.")
+            show_info(self, "Select Specimen", "Select a Microbiology / Culture order first.")
             return
+        target_id = self.selected_order_id
         conn = get_conn()
-        o = conn.execute("SELECT antibiogram_json, specimen_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
+        o = conn.execute("SELECT antibiogram_json, specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
         conn.close()
         dlg = AntibiogramDialog(o["antibiogram_json"] or "", self)
         if dlg.exec() == QDialog.Accepted:
             raw_json, short_res = dlg.export_payload()
             conn = get_conn()
-            conn.execute("UPDATE orders SET antibiogram_json = ? WHERE id = ?", (raw_json, self.selected_order_id))
+            conn.execute("UPDATE orders SET antibiogram_json = ? WHERE id = ?", (raw_json, target_id))
             conn.commit()
             conn.close()
             self.in_result.setText(short_res)
             log_audit(self.user["name"], "ANTIBIOGRAM_SAVED", o["specimen_id"], short_res)
             self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=False)
 
     def _verify_selected_order(self):
         if not self.selected_order_id:
-            QMessageBox.information(self, "No Selection", "Please select a specimen order from the worklist first.")
+            show_info(self, "No Selection", "Please select a specimen order from the worklist first.")
             return
         val_str = self.in_result.text().strip()
         if not val_str:
-            QMessageBox.warning(self, "Missing Result", "Enter a result value before verifying.")
+            show_warn(self, "Missing Result", "Enter a result value before verifying.")
             return
 
+        verified_id = self.selected_order_id
         conn = get_conn()
         o = conn.execute("""
             SELECT o.*, t.low_val, t.high_val, t.crit_low, t.crit_high, t.delta_pct
             FROM orders o
             LEFT JOIN tests t ON o.test_name = t.test_name
             WHERE o.id = ?
-        """, (self.selected_order_id,)).fetchone()
+        """, (verified_id,)).fetchone()
         if not o:
             conn.close()
             return
 
         if self.qc_lockout_enabled and o["test_name"] in self.failed_qc_tests:
             conn.close()
-            QMessageBox.critical(
+            show_error(
                 self, "QC Lockout Active",
                 f"Verification blocked for {o['test_name']}.\nResolve the active Westgard 1-3s QC failure first."
             )
@@ -2289,13 +2515,11 @@ class MainWorkspace(QWidget):
                     pct_diff = abs((v_now - v_old) / v_old) * 100.0
                     if pct_diff >= float(o["delta_pct"]):
                         delta_msg = f"{pct_diff:.0f}% shift vs prior ({v_old:g})"
-                        ans = QMessageBox.warning(
+                        if not ask_confirm(
                             self, "Delta Check Alert",
                             f"Result shifted {pct_diff:.1f}% from prior value ({v_old:g} -> {v_now:g}).\n"
-                            f"Confirm specimen identity and proceed with release?",
-                            QMessageBox.Yes | QMessageBox.No
-                        )
-                        if ans != QMessageBox.Yes:
+                            f"Confirm specimen identity and proceed with release?"
+                        ):
                             conn.close()
                             return
             except Exception:
@@ -2355,17 +2579,20 @@ class MainWorkspace(QWidget):
         """, (
             val_str, flag, new_status, self.in_notes.text().strip(),
             self.user["name"], now, amend_reason,
-            panic_notified, delta_msg, is_crit, self.selected_order_id
+            panic_notified, delta_msg, is_crit, verified_id
         ))
         conn.commit()
         conn.close()
 
         log_audit(self.user["name"], f"RESULT_{new_status.upper()}", o["specimen_id"], f"{o['test_name']} = {val_str} [{flag}]")
+        self.selected_order_id = verified_id
         self.refresh_all()
+        self._load_inspector_order(verified_id, animate_from_center=True)
 
     def _reject_selected_order(self):
         if not self.selected_order_id:
             return
+        target_id = self.selected_order_id
         dlg = QDialog(self)
         dlg.setWindowTitle("Reject Specimen")
         dlg.setStyleSheet(APP_QSS)
@@ -2385,19 +2612,20 @@ class MainWorkspace(QWidget):
         if dlg.exec() == QDialog.Accepted:
             reason = cmb.currentText()
             conn = get_conn()
-            row = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
+            row = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
             conn.execute("""
                 UPDATE orders SET status = 'Rejected', flag = 'REJECTED', notes = ?, verified_by = ?, verified_at = ?
                 WHERE id = ?
-            """, (f"REJECTED: {reason}", self.user["name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), self.selected_order_id))
+            """, (f"REJECTED: {reason}", self.user["name"], datetime.now().strftime("%Y-%m-%d %H:%M:%S"), target_id))
             conn.commit()
             conn.close()
             log_audit(self.user["name"], "SPECIMEN_REJECTED", row["specimen_id"] if row else "-", reason)
             self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=True)
 
     def _print_consolidated_pdf(self):
         if not self.selected_order_id:
-            QMessageBox.information(self, "Select Specimen", "Select an order from the worklist to print its report.")
+            show_info(self, "Select Specimen", "Select an order from the worklist to print its report.")
             return
         conn = get_conn()
         sel = conn.execute("SELECT specimen_id, patient_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
@@ -2417,9 +2645,9 @@ class MainWorkspace(QWidget):
                 if sys.platform == "win32":
                     os.startfile(path)
                 else:
-                    QMessageBox.information(self, "PDF Saved", f"Saved to:\n{path}")
+                    show_info(self, "PDF Saved", f"Saved to:\n{path}")
             except Exception as e:
-                QMessageBox.critical(self, "PDF Error", str(e))
+                show_error(self, "PDF Error", str(e))
 
     def _print_tube_label(self):
         if not self.selected_order_id:
@@ -2453,7 +2681,6 @@ class MainWorkspace(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(14)
 
-        # Left: Scrollable Patient & Order Details
         left_scroll = QScrollArea()
         left_scroll.setObjectName("DarkScroll")
         left_scroll.setWidgetResizable(True)
@@ -2525,7 +2752,6 @@ class MainWorkspace(QWidget):
 
         left_scroll.setWidget(left)
 
-        # Right: Preset Panels + Dark Scrollable Assay Selection List
         right = QFrame()
         right.setObjectName("SurfaceCard")
         rl = QVBoxLayout(right)
@@ -2617,11 +2843,11 @@ class MainWorkspace(QWidget):
     def _submit_requisition(self):
         name = self.in_pt_name.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing Patient Name", "Enter or select a patient name.")
+            show_warn(self, "Missing Patient Name", "Enter or select a patient name.")
             return
         selected_tests = [t for t, cb in self.test_checkboxes.items() if cb.isChecked()]
         if not selected_tests:
-            QMessageBox.warning(self, "No Assays Selected", "Select at least one test or preset panel.")
+            show_warn(self, "No Assays Selected", "Select at least one test or preset panel.")
             return
 
         mrn = self.in_pt_mrn.text().strip() or f"MRN-{random.randint(100000, 999999)}"
@@ -2646,6 +2872,7 @@ class MainWorkspace(QWidget):
             )
             pid = cur.lastrowid
 
+        first_order_id = None
         for t_name in selected_tests:
             t_info = cur.execute("SELECT * FROM tests WHERE test_name = ?", (t_name,)).fetchone()
             cur.execute("""
@@ -2658,14 +2885,19 @@ class MainWorkspace(QWidget):
                 t_info["unit"], t_info["ref_range"], t_info["tube_type"],
                 self.user["name"], now, self.in_req_slot.text().strip()
             ))
+            if first_order_id is None:
+                first_order_id = cur.lastrowid
 
         conn.commit()
         conn.close()
         log_audit(self.user["name"], "REQUISITION_CREATED", spec_id, f"{name} ({len(selected_tests)} assays)")
         self._clear_test_checks()
+        self.selected_order_id = first_order_id
         self.refresh_all()
+        if first_order_id:
+            self._load_inspector_order(first_order_id, animate_from_center=False)
         self.tabs.setCurrentIndex(0)
-        QMessageBox.information(self, "Order Created", f"Specimen ID: {spec_id}\nPatient: {name}\nAssays Queued: {len(selected_tests)}")
+        show_info(self, "Order Created", f"Specimen ID: {spec_id}\nPatient: {name}\nAssays Queued: {len(selected_tests)}")
 
     # --------------------------------------------------------------------------
     # TAB 3: PATIENTS REGISTRATION & DIRECTORY
@@ -2676,7 +2908,6 @@ class MainWorkspace(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(14)
 
-        # Left: Scrollable Patient Registration / Profile Editor
         reg_scroll = QScrollArea()
         reg_scroll.setObjectName("DarkScroll")
         reg_scroll.setWidgetResizable(True)
@@ -2737,7 +2968,6 @@ class MainWorkspace(QWidget):
         rl.addStretch()
         reg_scroll.setWidget(reg_card)
 
-        # Right: Searchable Patient Directory
         dir_card = QFrame()
         dir_card.setObjectName("SurfaceCard")
         dl = QVBoxLayout(dir_card)
@@ -2815,7 +3045,7 @@ class MainWorkspace(QWidget):
     def _save_patient_profile(self):
         name = self.reg_name.text().strip()
         if not name:
-            QMessageBox.warning(self, "Missing Name", "Patient full name is required.")
+            show_warn(self, "Missing Name", "Patient full name is required.")
             return
         mrn = self.reg_mrn.text().strip() or f"MRN-{random.randint(100000, 999999)}"
         dob = self.reg_dob.text().strip()
@@ -2841,19 +3071,19 @@ class MainWorkspace(QWidget):
             conn.commit()
         except sqlite3.IntegrityError:
             conn.close()
-            QMessageBox.warning(self, "Duplicate MRN", f"MRN '{mrn}' already belongs to another patient.")
+            show_warn(self, "Duplicate MRN", f"MRN '{mrn}' already belongs to another patient.")
             return
         conn.close()
 
         log_audit(self.user["name"], action, "-", f"{name} ({mrn})")
         self._clear_patient_form()
         self.refresh_all()
-        QMessageBox.information(self, "Saved", f"Patient record saved for {name} ({mrn}).")
+        show_info(self, "Patient Saved", f"Patient record saved:\n{name} ({mrn})")
 
     def _open_registry_selected_history(self):
         rows = self.tbl_patients.selectionModel().selectedRows()
         if not rows:
-            QMessageBox.information(self, "Select Patient", "Select a patient row from the directory first.")
+            show_info(self, "Select Patient", "Select a patient row from the directory first.")
             return
         pid = int(self.tbl_patients.item(rows[0].row(), 0).text())
         PatientHistoryDialog(pid, self).exec()
@@ -2909,15 +3139,13 @@ class MainWorkspace(QWidget):
     def _pathologist_cosign(self):
         rows = self.tbl_path.selectionModel().selectedRows()
         if not rows:
-            QMessageBox.information(self, "Select Case", "Select a specimen row to co-sign.")
+            show_info(self, "Select Case", "Select a specimen row to co-sign.")
             return
         if self.user["pin"] != "1111" and "Pathologist" not in self.user["role"]:
-            ans = QMessageBox.question(
+            if not ask_confirm(
                 self, "Pathologist Signature",
-                "You are logged in as RMT. Record co-signature for Gaia Aubrey Manalo, MD?",
-                QMessageBox.Yes | QMessageBox.No
-            )
-            if ans != QMessageBox.Yes:
+                "You are logged in as RMT. Record co-signature for Gaia Aubrey Manalo, MD?"
+            ):
                 return
 
         oid = int(self.tbl_path.item(rows[0].row(), 0).text())
@@ -3004,7 +3232,7 @@ class MainWorkspace(QWidget):
         try:
             measured = float(self.in_qc_val.text().strip())
         except Exception:
-            QMessageBox.warning(self, "Invalid Number", "Enter a valid numeric QC measurement.")
+            show_warn(self, "Invalid Number", "Enter a valid numeric QC measurement.")
             return
 
         conn = get_conn()
@@ -3038,7 +3266,7 @@ class MainWorkspace(QWidget):
         self.refresh_qc()
 
         if abs_z > 3.0:
-            QMessageBox.critical(
+            show_error(
                 self, "Westgard 1-3s Violation",
                 f"Control: {label}\nMeasured: {measured} {t['unit']} (Z = {z:+.2f} SD)\n\n"
                 f"Exceeds +/- 3 SD limits. Recalibrate before releasing patient results."
@@ -3160,7 +3388,7 @@ class MainWorkspace(QWidget):
             lo = float(self.cat_lo.text()) if self.cat_lo.text().strip() else None
             hi = float(self.cat_hi.text()) if self.cat_hi.text().strip() else None
         except Exception:
-            QMessageBox.warning(self, "Invalid Range", "Low and High must be numeric (or blank).")
+            show_warn(self, "Invalid Range", "Low and High must be numeric (or blank).")
             return
         ref = f"{lo:g} - {hi:g}" if (lo is not None and hi is not None) else "Qualitative"
         conn = get_conn()
@@ -3177,7 +3405,7 @@ class MainWorkspace(QWidget):
         self.refresh_all()
 
     # --------------------------------------------------------------------------
-    # TAB 7: REPORTS, STAFF ROSTER & AUDIT LOG (FLAT, NO NESTED TABS)
+    # TAB 7 (ADMIN ONLY): REPORTS, STAFF ROSTER & AUDIT LOG
     # --------------------------------------------------------------------------
     def _build_admin_tab(self) -> QWidget:
         w = QWidget()
@@ -3185,7 +3413,6 @@ class MainWorkspace(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(14)
 
-        # Left Column: Shift Handover, Data Exports & Staff Roster
         left_col = QVBoxLayout()
         left_col.setSpacing(12)
 
@@ -3253,7 +3480,6 @@ class MainWorkspace(QWidget):
 
         left_col.addWidget(st_card, 1)
 
-        # Right Column: Audit Log
         aud_card = QFrame()
         aud_card.setObjectName("SurfaceCard")
         al = QVBoxLayout(aud_card)
@@ -3288,7 +3514,10 @@ class MainWorkspace(QWidget):
         pin = self.st_pin.text().strip()
         name = self.st_name.text().strip()
         if len(pin) != 4 or not pin.isdigit() or not name:
-            QMessageBox.warning(self, "Invalid Staff Entry", "PIN must be 4 digits and Name cannot be empty.")
+            show_warn(self, "Invalid Staff Entry", "PIN must be 4 digits and Name cannot be empty.")
+            return
+        if pin == ADMIN_MODE_PIN:
+            show_warn(self, "Reserved PIN", "PIN 0000 is reserved for Admin Mode access.")
             return
         conn = get_conn()
         conn.execute("""
@@ -3316,14 +3545,14 @@ class MainWorkspace(QWidget):
             writer.writerow(["Specimen ID", "MRN", "Patient", "Assay", "Department", "Priority", "Status", "Result", "Unit", "Flag", "Verified By", "Verified At"])
             for r in rows:
                 writer.writerow(list(r))
-        QMessageBox.information(self, "CSV Exported", f"Worklist exported to:\n{path}")
+        show_info(self, "CSV Exported", f"Worklist exported to:\n{path}")
 
     def _backup_db(self):
         path, _ = QFileDialog.getSaveFileName(self, "Backup SQLite Database", f"monocytes_lis_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db", "SQLite DB (*.db)")
         if path:
             shutil.copy2(DB_NAME, path)
             log_audit(self.user["name"], "DB_BACKUP", "-", path)
-            QMessageBox.information(self, "Backup Complete", f"Database backed up to:\n{path}")
+            show_info(self, "Backup Complete", f"Database backed up to:\n{path}")
 
     # --------------------------------------------------------------------------
     # MASTER DATA REFRESHERS
@@ -3348,10 +3577,35 @@ class MainWorkspace(QWidget):
 
         self.lbl_queue_counts.setText(f"Total: {tot}  |  Pending: {pend}  |  STAT: {stat}  |  Verified: {ver}")
 
+    def _compute_tat_str(self, r, now_dt: datetime) -> str:
+        if r["status"] in ("Verified", "Amended", "Rejected"):
+            return "Done"
+        if not r["ordered_at"]:
+            return "-"
+        try:
+            odt = datetime.strptime(r["ordered_at"], "%Y-%m-%d %H:%M:%S")
+            mins = int((now_dt - odt).total_seconds() // 60)
+            sla = 60 if r["priority"] == "STAT" else 240
+            return f"{mins}m / {sla}m"
+        except Exception:
+            return "-"
+
+    def _status_color(self, badge: str) -> str:
+        if badge in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL", "Critical Alert"):
+            return "#FB7185"
+        if badge == "LOW":
+            return "#FBBF24"
+        if badge in ("NORMAL", "All Verified"):
+            return "#34D399"
+        if badge == "REJECTED":
+            return "#94A3B8"
+        return "#38BDF8"
+
     def refresh_worklist(self):
         q = self.in_search.text().strip().lower()
         dept = self.cmb_dept_filter.currentText()
         st_f = self.cmb_status_filter.currentText()
+        target_order_id = self.selected_order_id
 
         conn = get_conn()
         rows = conn.execute("""
@@ -3379,46 +3633,120 @@ class MainWorkspace(QWidget):
                 continue
             filtered.append(r)
 
-        self.tbl_worklist.setRowCount(len(filtered))
+        # Group orders by specimen_id while preserving worklist priority/order
+        groups = []
+        group_map = {}
+        for r in filtered:
+            sid = r["specimen_id"]
+            if sid not in group_map:
+                group_map[sid] = []
+                groups.append((sid, group_map[sid]))
+            group_map[sid].append(r)
+
+        self.tbl_worklist.blockSignals(True)
+        self.tbl_worklist.clear()
         now_dt = datetime.now()
-        for i, r in enumerate(filtered):
-            self.tbl_worklist.setItem(i, 0, _make_item(str(r["id"])))
-            self.tbl_worklist.setItem(i, 1, _make_item(r["specimen_id"]))
-            self.tbl_worklist.setItem(i, 2, _make_item(r["full_name"]))
-            self.tbl_worklist.setItem(i, 3, _make_item(r["test_name"]))
-            self.tbl_worklist.setItem(i, 4, _make_item(r["department"]))
+        item_to_select = None
 
-            pr_col = "#FB7185" if r["priority"] == "STAT" else None
-            self.tbl_worklist.setItem(i, 5, _make_item(r["priority"], pr_col))
+        bold_font = QFont("Segoe UI", 9, QFont.Bold)
+        group_bg = QBrush(QColor("#10192D"))
 
-            tat_str = "Done"
-            if r["status"] not in ("Verified", "Amended", "Rejected") and r["ordered_at"]:
-                try:
-                    odt = datetime.strptime(r["ordered_at"], "%Y-%m-%d %H:%M:%S")
-                    mins = int((now_dt - odt).total_seconds() // 60)
-                    sla = 60 if r["priority"] == "STAT" else 240
-                    tat_str = f"{mins}m / {sla}m"
-                except Exception:
-                    tat_str = "-"
-            self.tbl_worklist.setItem(i, 6, _make_item(tat_str))
-
-            res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
-            self.tbl_worklist.setItem(i, 7, _make_item(res_txt))
-
-            badge = r["flag"] if r["flag"] else r["status"]
-            if badge in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL"):
-                st_col = "#FB7185"
-            elif badge == "LOW":
-                st_col = "#FBBF24"
-            elif badge == "NORMAL":
-                st_col = "#34D399"
-            elif badge == "REJECTED":
-                st_col = "#94A3B8"
+        for sid, items in groups:
+            if len(items) == 1:
+                r = items[0]
+                tat_str = self._compute_tat_str(r, now_dt)
+                res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
+                badge = r["flag"] if r["flag"] else r["status"]
+                cols = [r["specimen_id"], r["full_name"], r["test_name"], r["department"], r["priority"], tat_str, res_txt, badge]
+                node = QTreeWidgetItem(cols)
+                node.setData(0, Qt.UserRole, r["id"])
+                for c_idx, txt in enumerate(cols):
+                    node.setToolTip(c_idx, txt)
+                if r["priority"] == "STAT":
+                    node.setForeground(4, QBrush(QColor("#FB7185")))
+                node.setForeground(7, QBrush(QColor(self._status_color(badge))))
+                self.tbl_worklist.addTopLevelItem(node)
+                if r["id"] == target_order_id:
+                    item_to_select = node
             else:
-                st_col = "#38BDF8"
-            self.tbl_worklist.setItem(i, 8, _make_item(badge, st_col))
+                # Multi-test collapsible patient group
+                first = items[0]
+                depts = sorted({x["department"] for x in items})
+                dept_summary = depts[0] if len(depts) == 1 else f"Multi-Dept ({len(depts)})"
+                is_any_stat = any(x["priority"] == "STAT" for x in items)
+                prio_summary = "STAT" if is_any_stat else first["priority"]
 
-        self.tbl_worklist.resizeRowsToContents()
+                done_cnt = sum(1 for x in items if x["status"] in ("Verified", "Amended", "Rejected"))
+                has_crit = any((x["flag"] or "") in ("CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL", "HIGH") for x in items)
+                if done_cnt == len(items):
+                    grp_status = "All Verified"
+                elif has_crit:
+                    grp_status = "Critical Alert"
+                elif done_cnt > 0:
+                    grp_status = "In Progress"
+                else:
+                    grp_status = first["status"]
+
+                active_tats = [self._compute_tat_str(x, now_dt) for x in items if self._compute_tat_str(x, now_dt) != "Done"]
+                tat_summary = active_tats[0] if active_tats else "Done"
+                tests_preview = ", ".join(x["test_name"] for x in items)
+
+                grp_cols = [
+                    sid,
+                    f"{first['full_name']} ({len(items)} tests)",
+                    tests_preview,
+                    dept_summary,
+                    prio_summary,
+                    tat_summary,
+                    f"{done_cnt} / {len(items)} Verified",
+                    grp_status,
+                ]
+                parent_node = QTreeWidgetItem(grp_cols)
+                parent_node.setData(0, Qt.UserRole + 1, sid)
+                for c_idx, txt in enumerate(grp_cols):
+                    parent_node.setToolTip(c_idx, txt)
+                    parent_node.setBackground(c_idx, group_bg)
+                parent_node.setFont(0, bold_font)
+                parent_node.setFont(1, bold_font)
+                if is_any_stat:
+                    parent_node.setForeground(4, QBrush(QColor("#FB7185")))
+                parent_node.setForeground(7, QBrush(QColor(self._status_color(grp_status))))
+
+                self.tbl_worklist.addTopLevelItem(parent_node)
+                parent_node.setExpanded(sid not in self.collapsed_specimens)
+
+                for r in sorted(items, key=lambda x: x["id"]):
+                    tat_str = self._compute_tat_str(r, now_dt)
+                    res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
+                    badge = r["flag"] if r["flag"] else r["status"]
+                    child_cols = [
+                        f"↳ #{r['id']}",
+                        r["full_name"],
+                        r["test_name"],
+                        r["department"],
+                        r["priority"],
+                        tat_str,
+                        res_txt,
+                        badge,
+                    ]
+                    child = QTreeWidgetItem(child_cols)
+                    child.setData(0, Qt.UserRole, r["id"])
+                    for c_idx, txt in enumerate(child_cols):
+                        child.setToolTip(c_idx, txt)
+                    child.setForeground(0, QBrush(QColor("#64748B")))
+                    if r["priority"] == "STAT":
+                        child.setForeground(4, QBrush(QColor("#FB7185")))
+                    child.setForeground(7, QBrush(QColor(self._status_color(badge))))
+                    parent_node.addChild(child)
+                    if r["id"] == target_order_id:
+                        parent_node.setExpanded(True)
+                        self.collapsed_specimens.discard(sid)
+                        item_to_select = child
+
+        if item_to_select is not None:
+            self.tbl_worklist.setCurrentItem(item_to_select)
+            self.tbl_worklist.scrollToItem(item_to_select)
+        self.tbl_worklist.blockSignals(False)
 
     def refresh_requisition_catalog(self):
         conn = get_conn()
