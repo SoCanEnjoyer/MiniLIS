@@ -17,11 +17,11 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 
 from PySide6.QtCore import (
-    Qt, QTimer, QRectF, QPointF, QPropertyAnimation, QEasingCurve,
+    Qt, QTimer, QRectF, QPointF, QEasingCurve,
     QVariantAnimation, Signal
 )
 from PySide6.QtGui import (
-    QPainter, QColor, QPen, QRadialGradient,
+    QPainter, QColor, QPen, QLinearGradient,
     QFont, QKeySequence, QShortcut
 )
 from PySide6.QtWidgets import (
@@ -163,7 +163,7 @@ TUBE_COLORS = {
 
 APP_QSS = """
 QMainWindow, QWidget#RootCanvas {
-    background-color: #070B14;
+    background-color: #080C15;
     color: #E2E8F0;
     font-family: "Segoe UI", "Inter", sans-serif;
     font-size: 10pt;
@@ -173,18 +173,33 @@ QWidget {
     font-family: "Segoe UI", "Inter", sans-serif;
 }
 QFrame#SurfaceCard {
-    background-color: #0D1322;
+    background-color: #0E1424;
     border: 1px solid #1E293B;
     border-radius: 10px;
 }
 QFrame#SubPanel {
-    background-color: #11192C;
+    background-color: #121A2E;
     border: 1px solid #1E293B;
     border-radius: 8px;
 }
 QFrame#TopHeaderBar {
     background-color: #0B101D;
     border-bottom: 1px solid #1E293B;
+}
+QScrollArea {
+    background-color: transparent;
+    border: none;
+}
+QScrollArea#DarkScroll {
+    background-color: #090E1A;
+    border: 1px solid #1E293B;
+    border-radius: 8px;
+}
+QWidget#ScrollContent {
+    background-color: #090E1A;
+}
+QWidget#CardScrollContent {
+    background-color: #0E1424;
 }
 QLabel#SectionHeader {
     font-size: 11pt;
@@ -196,6 +211,12 @@ QLabel#GroupTitle {
     font-weight: 700;
     color: #94A3B8;
     letter-spacing: 0.6px;
+    padding-top: 4px;
+}
+QLabel#FieldLabel {
+    color: #CBD5E1;
+    font-size: 9pt;
+    font-weight: 600;
 }
 QLabel#MutedLabel {
     color: #94A3B8;
@@ -272,14 +293,6 @@ QPushButton#DangerBtn {
 QPushButton#DangerBtn:hover {
     background-color: #9F1239;
 }
-QPushButton#AccentBtn {
-    background-color: #3730A3;
-    border: 1px solid #6366F1;
-    color: #FFFFFF;
-}
-QPushButton#AccentBtn:hover {
-    background-color: #312E81;
-}
 QPushButton#KeypadBtn {
     background-color: #111827;
     border: 1px solid #263348;
@@ -302,7 +315,7 @@ QPushButton#KeypadBtn:pressed {
 QTabWidget::pane {
     border: 1px solid #1E293B;
     border-radius: 9px;
-    background-color: #070B14;
+    background-color: #080C15;
     top: -1px;
 }
 QTabBar::tab {
@@ -350,7 +363,7 @@ QHeaderView::section {
     padding: 7px 8px;
 }
 QScrollBar:vertical {
-    background: #070B14;
+    background: #080C15;
     width: 10px;
     margin: 0px;
 }
@@ -363,7 +376,7 @@ QScrollBar::handle:vertical:hover {
     background: #38BDF8;
 }
 QScrollBar:horizontal {
-    background: #070B14;
+    background: #080C15;
     height: 10px;
     margin: 0px;
 }
@@ -380,15 +393,20 @@ QScrollBar::add-line, QScrollBar::sub-line {
     height: 0px;
 }
 QCheckBox {
-    spacing: 8px;
-    color: #E2E8F0;
+    spacing: 10px;
+    color: #F1F5F9;
+    background-color: transparent;
+    font-size: 9.5pt;
 }
 QCheckBox::indicator {
-    width: 16px;
-    height: 16px;
+    width: 17px;
+    height: 17px;
     border-radius: 4px;
-    border: 1px solid #334155;
-    background: #090E1A;
+    border: 1px solid #475569;
+    background: #0E1424;
+}
+QCheckBox::indicator:hover {
+    border-color: #38BDF8;
 }
 QCheckBox::indicator:checked {
     background: #0284C7;
@@ -546,6 +564,8 @@ def init_db():
         )
     """)
 
+    _ensure_column(cur, "patients", "contact", "TEXT")
+
     order_upgrades = [
         ("collected_at", "TEXT"),
         ("verified_by", "TEXT"),
@@ -612,6 +632,16 @@ def log_audit(operator: str, action: str, specimen_id: str = "-", details: str =
         pass
 
 
+def _make_item(text: str, color_hex: str = None, align=None) -> QTableWidgetItem:
+    item = QTableWidgetItem(text)
+    item.setToolTip(text)
+    if color_hex:
+        item.setForeground(QColor(color_hex))
+    if align is not None:
+        item.setTextAlignment(align)
+    return item
+
+
 # ==============================================================================
 # CLINICAL VISUAL INDICATORS (REFERENCE RANGE GAUGE, COLLECTION TUBE, CHARTS)
 # ==============================================================================
@@ -621,7 +651,7 @@ class VectorRangeGauge(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(70)
+        self.setMinimumHeight(72)
         self.norm_pos = 0.5
         self.flag_text = "AWAITING RESULT"
         self.flag_color = QColor("#64748B")
@@ -629,7 +659,7 @@ class VectorRangeGauge(QWidget):
         self.high_lbl = "-"
 
         self.anim = QVariantAnimation(self)
-        self.anim.setDuration(380)
+        self.anim.setDuration(320)
         self.anim.setEasingCurve(QEasingCurve.OutCubic)
         self.anim.valueChanged.connect(self._on_step)
 
@@ -639,8 +669,8 @@ class VectorRangeGauge(QWidget):
 
     def set_reading(self, val_str: str, low_val, high_val, crit_low, crit_high, flag: str):
         self.flag_text = flag or "PENDING"
-        self.low_lbl = f"{low_val}" if low_val is not None else "-"
-        self.high_lbl = f"{high_val}" if high_val is not None else "-"
+        self.low_lbl = f"{low_val:g}" if low_val is not None else "-"
+        self.high_lbl = f"{high_val:g}" if high_val is not None else "-"
 
         color_map = {
             "NORMAL": "#10B981",
@@ -679,7 +709,8 @@ class VectorRangeGauge(QWidget):
 
         p.setFont(QFont("Segoe UI", 9, QFont.Bold))
         p.setPen(self.flag_color)
-        p.drawText(QRectF(2, 2, w - 4, 20), Qt.AlignLeft | Qt.AlignVCenter, f"Status: {self.flag_text}")
+        status_str = p.fontMetrics().elidedText(f"Status: {self.flag_text}", Qt.ElideRight, max(40, w - 6))
+        p.drawText(QRectF(2, 2, w - 4, 20), Qt.AlignLeft | Qt.AlignVCenter, status_str)
 
         bar_x, bar_y = 10.0, 28.0
         bar_w, bar_h = max(40.0, w - 20.0), 12.0
@@ -703,8 +734,11 @@ class VectorRangeGauge(QWidget):
         x_hi = bar_x + bar_w * 0.75
         p.drawLine(QPointF(x_lo, bar_y - 3), QPointF(x_lo, bar_y + bar_h + 3))
         p.drawLine(QPointF(x_hi, bar_y - 3), QPointF(x_hi, bar_y + bar_h + 3))
-        p.drawText(QRectF(x_lo - 35, bar_y + bar_h + 3, 70, 16), Qt.AlignCenter, self.low_lbl)
-        p.drawText(QRectF(x_hi - 35, bar_y + bar_h + 3, 70, 16), Qt.AlignCenter, self.high_lbl)
+
+        lo_rect_x = max(0.0, x_lo - 42.0)
+        hi_rect_x = min(max(0.0, w - 84.0), x_hi - 42.0)
+        p.drawText(QRectF(lo_rect_x, bar_y + bar_h + 4, 84, 16), Qt.AlignCenter, self.low_lbl)
+        p.drawText(QRectF(hi_rect_x, bar_y + bar_h + 4, 84, 16), Qt.AlignCenter, self.high_lbl)
 
         nx = bar_x + self.norm_pos * bar_w
         ny = bar_y + bar_h * 0.5
@@ -723,6 +757,7 @@ class TubeBadgeWidget(QWidget):
 
     def set_tube(self, tube_name: str):
         self.tube_name = tube_name or "Gold (SST)"
+        self.setToolTip(f"Collection Container: {self.tube_name}")
         self.update()
 
     def paintEvent(self, event):
@@ -744,7 +779,9 @@ class TubeBadgeWidget(QWidget):
 
         p.setPen(QColor("#CBD5E1"))
         p.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
-        p.drawText(QRectF(44, 3, self.width() - 48, 24), Qt.AlignLeft | Qt.AlignVCenter, f"Container: {self.tube_name}")
+        avail_w = max(40, self.width() - 48)
+        txt = p.fontMetrics().elidedText(f"Container: {self.tube_name}", Qt.ElideRight, avail_w)
+        p.drawText(QRectF(44, 3, avail_w, 24), Qt.AlignLeft | Qt.AlignVCenter, txt)
 
 
 class MplCanvas(FigureCanvas):
@@ -758,7 +795,7 @@ class MplCanvas(FigureCanvas):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def _style_ax(self, ax):
-        ax.set_facecolor("#0D1322")
+        ax.set_facecolor("#0E1424")
         ax.tick_params(colors="#94A3B8", labelsize=8)
         for spine in ax.spines.values():
             spine.set_color("#263348")
@@ -772,24 +809,16 @@ class MplCanvas(FigureCanvas):
 # ==============================================================================
 
 class CleanLoginBackdrop(QWidget):
-    """Clean, static obsidian-slate backdrop with subtle grid lines."""
+    """Smooth, minimal dark slate gradient backdrop."""
 
     def paintEvent(self, event):
         p = QPainter(self)
         w, h = self.width(), self.height()
-
-        bg = QRadialGradient(w * 0.5, h * 0.45, max(w, h) * 0.72)
-        bg.setColorAt(0.0, QColor("#0E1526"))
-        bg.setColorAt(0.65, QColor("#080C16"))
-        bg.setColorAt(1.0, QColor("#05080F"))
-        p.fillRect(0, 0, w, h, bg)
-
-        p.setPen(QPen(QColor(30, 41, 59, 32), 1))
-        step = 56
-        for gx in range(0, w, step):
-            p.drawLine(gx, 0, gx, h)
-        for gy in range(0, h, step):
-            p.drawLine(0, gy, w, gy)
+        grad = QLinearGradient(0, 0, w, h)
+        grad.setColorAt(0.0, QColor("#070B14"))
+        grad.setColorAt(0.5, QColor("#0B1120"))
+        grad.setColorAt(1.0, QColor("#060911"))
+        p.fillRect(0, 0, w, h, grad)
 
 
 class StaffLoginScreen(QWidget):
@@ -812,34 +841,33 @@ class StaffLoginScreen(QWidget):
         c_lay.setAlignment(Qt.AlignCenter)
 
         self.card = QFrame()
-        self.card.setFixedWidth(400)
+        self.card.setFixedWidth(390)
         self.card.setStyleSheet("""
             QFrame {
-                background-color: #0D1322;
+                background-color: #0E1424;
                 border: 1px solid #1E293B;
                 border-radius: 14px;
             }
         """)
         shadow = QGraphicsDropShadowEffect(self.card)
-        shadow.setBlurRadius(36)
-        shadow.setOffset(0, 12)
-        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setBlurRadius(32)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 170))
         self.card.setGraphicsEffect(shadow)
 
         card_lay = QVBoxLayout(self.card)
         card_lay.setContentsMargins(28, 28, 28, 24)
         card_lay.setSpacing(14)
 
-        # Clean clinical emblem badge
         badge = QLabel("MDL")
         badge.setAlignment(Qt.AlignCenter)
-        badge.setFixedSize(48, 48)
+        badge.setFixedSize(46, 46)
         badge.setStyleSheet("""
             background-color: #111C33;
             border: 1px solid #2563EB;
-            border-radius: 12px;
+            border-radius: 11px;
             color: #38BDF8;
-            font-size: 13pt;
+            font-size: 12.5pt;
             font-weight: 800;
             letter-spacing: 1px;
         """)
@@ -850,7 +878,7 @@ class StaffLoginScreen(QWidget):
 
         lbl_brand = QLabel("Monocytes Delegates LIS")
         lbl_brand.setAlignment(Qt.AlignCenter)
-        lbl_brand.setStyleSheet("color: #F8FAFC; font-size: 15pt; font-weight: 700; border: none; background: transparent;")
+        lbl_brand.setStyleSheet("color: #F8FAFC; font-size: 14.5pt; font-weight: 700; border: none; background: transparent;")
         card_lay.addWidget(lbl_brand)
 
         lbl_sub = QLabel("Clinical Laboratory Information System")
@@ -858,7 +886,6 @@ class StaffLoginScreen(QWidget):
         lbl_sub.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
         card_lay.addWidget(lbl_sub)
 
-        # 4 PIN Slots
         slot_row = QHBoxLayout()
         slot_row.setSpacing(12)
         slot_row.setAlignment(Qt.AlignCenter)
@@ -866,14 +893,14 @@ class StaffLoginScreen(QWidget):
         for _ in range(4):
             box = QLabel("•")
             box.setAlignment(Qt.AlignCenter)
-            box.setFixedSize(54, 54)
+            box.setFixedSize(52, 52)
             box.setStyleSheet("""
-                background-color: #080C16;
+                background-color: #080C15;
                 border: 1px solid #263348;
                 border-radius: 10px;
                 color: #475569;
                 font-family: 'Consolas', monospace;
-                font-size: 19pt;
+                font-size: 18pt;
                 font-weight: 700;
             """)
             self.pin_slots.append(box)
@@ -885,7 +912,6 @@ class StaffLoginScreen(QWidget):
         self.lbl_status.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
         card_lay.addWidget(self.lbl_status)
 
-        # Keypad Grid
         grid = QGridLayout()
         grid.setSpacing(8)
         keys = [
@@ -936,18 +962,18 @@ class StaffLoginScreen(QWidget):
                     border-radius: 10px;
                     color: {border_hex};
                     font-family: 'Consolas', monospace;
-                    font-size: 19pt;
+                    font-size: 18pt;
                     font-weight: 700;
                 """)
             else:
                 slot.setText("•")
                 slot.setStyleSheet("""
-                    background-color: #080C16;
+                    background-color: #080C15;
                     border: 1px solid #263348;
                     border-radius: 10px;
                     color: #475569;
                     font-family: 'Consolas', monospace;
-                    font-size: 19pt;
+                    font-size: 18pt;
                     font-weight: 700;
                 """)
 
@@ -981,19 +1007,7 @@ class StaffLoginScreen(QWidget):
                 self.pin_buffer += k
                 self._refresh_slots("#38BDF8")
                 if len(self.pin_buffer) == 4:
-                    QTimer.singleShot(90, self._verify_pin)
-
-    def _shake_card(self):
-        orig = self.card.pos()
-        anim = QPropertyAnimation(self.card, b"pos", self)
-        anim.setDuration(260)
-        anim.setKeyValueAt(0.0, orig)
-        anim.setKeyValueAt(0.2, orig + QPointF(-10, 0).toPoint())
-        anim.setKeyValueAt(0.4, orig + QPointF(10, 0).toPoint())
-        anim.setKeyValueAt(0.6, orig + QPointF(-7, 0).toPoint())
-        anim.setKeyValueAt(0.8, orig + QPointF(7, 0).toPoint())
-        anim.setKeyValueAt(1.0, orig)
-        anim.start()
+                    QTimer.singleShot(80, self._verify_pin)
 
     def _verify_pin(self):
         if self.locked_transition:
@@ -1006,7 +1020,6 @@ class StaffLoginScreen(QWidget):
             self._refresh_slots("#F43F5E")
             self.lbl_status.setText("Invalid PIN — please try again")
             self.lbl_status.setStyleSheet("color: #FB7185; font-size: 9pt; font-weight: 600; border: none; background: transparent;")
-            self._shake_card()
             self.pin_buffer = ""
             return
 
@@ -1016,7 +1029,7 @@ class StaffLoginScreen(QWidget):
         self.lbl_status.setText(f"Welcome, {user['name']}")
         self.lbl_status.setStyleSheet("color: #34D399; font-size: 9.5pt; font-weight: 700; border: none; background: transparent;")
         log_audit(f"{user['name']} ({user['pin']})", "SESSION_UNLOCK", "-", f"Role: {user['role']}")
-        QTimer.singleShot(320, lambda: self.authenticated.emit(user))
+        QTimer.singleShot(260, lambda: self.authenticated.emit(user))
 
 
 # ==============================================================================
@@ -1326,9 +1339,12 @@ class AntibiogramDialog(QDialog):
         lay.addWidget(self.in_colony)
 
         scroll = QScrollArea()
+        scroll.setObjectName("DarkScroll")
         scroll.setWidgetResizable(True)
         inner = QWidget()
+        inner.setObjectName("ScrollContent")
         grid = QGridLayout(inner)
+        grid.setContentsMargins(12, 12, 12, 12)
         grid.setSpacing(8)
         self.abx_combos = {}
         saved_panel = saved.get("panel", {})
@@ -1397,8 +1413,8 @@ class PatientHistoryDialog(QDialog):
         top = QHBoxLayout()
         lbl = QLabel(f"{pt_name}  |  MRN: {pt_mrn}  |  Sex: {pt['sex'] if pt else '-'}  |  DOB: {pt['dob'] if pt else '-'}")
         lbl.setObjectName("SectionHeader")
-        top.addWidget(lbl)
-        top.addStretch()
+        lbl.setWordWrap(True)
+        top.addWidget(lbl, 1)
 
         top.addWidget(QLabel("Trend Chart:"))
         self.cmb_analyte = QComboBox()
@@ -1418,22 +1434,24 @@ class PatientHistoryDialog(QDialog):
         self.tbl.setHorizontalHeaderLabels(["Timestamp", "Specimen ID", "Assay", "Result", "Unit", "Flag", "Verified By"])
         self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl.setWordWrap(True)
         for i, r in enumerate(self.rows):
             ts = r["verified_at"] or r["ordered_at"] or "-"
-            self.tbl.setItem(i, 0, QTableWidgetItem(ts))
-            self.tbl.setItem(i, 1, QTableWidgetItem(r["specimen_id"]))
-            self.tbl.setItem(i, 2, QTableWidgetItem(r["test_name"]))
-            self.tbl.setItem(i, 3, QTableWidgetItem(r["result_value"] or "Pending"))
-            self.tbl.setItem(i, 4, QTableWidgetItem(r["unit"] or ""))
-            fl = QTableWidgetItem(r["flag"] or r["status"])
+            self.tbl.setItem(i, 0, _make_item(ts))
+            self.tbl.setItem(i, 1, _make_item(r["specimen_id"]))
+            self.tbl.setItem(i, 2, _make_item(r["test_name"]))
+            self.tbl.setItem(i, 3, _make_item(r["result_value"] or "Pending"))
+            self.tbl.setItem(i, 4, _make_item(r["unit"] or ""))
+            fl_col = None
             if r["flag"] in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL"):
-                fl.setForeground(QColor("#FB7185"))
+                fl_col = "#FB7185"
             elif r["flag"] == "LOW":
-                fl.setForeground(QColor("#FBBF24"))
+                fl_col = "#FBBF24"
             elif r["flag"] == "NORMAL":
-                fl.setForeground(QColor("#34D399"))
-            self.tbl.setItem(i, 5, fl)
-            self.tbl.setItem(i, 6, QTableWidgetItem(r["verified_by"] or "-"))
+                fl_col = "#34D399"
+            self.tbl.setItem(i, 5, _make_item(r["flag"] or r["status"], fl_col))
+            self.tbl.setItem(i, 6, _make_item(r["verified_by"] or "-"))
+        self.tbl.resizeRowsToContents()
         lay.addWidget(self.tbl)
 
         self._plot_trend(self.cmb_analyte.currentText())
@@ -1511,7 +1529,7 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
     pdf.set_xy(145, 16)
     pdf.set_font("Courier", "", 8)
     pdf.set_text_color(148, 163, 184)
-    pdf.cell(53, 5, _pdf_safe(f"AUTH HASH: #{doc_hash}"), align="R")
+    pdf.cell(53, 5, _pdf_safe(f"REPORT ID: {doc_hash}"), align="R")
 
     pdf.set_xy(12, 39)
     pdf.set_fill_color(241, 245, 249)
@@ -1617,7 +1635,7 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
 
         note_bits = []
         if o.get("panic_notified_to"):
-            note_bits.append(f"PANIC READ-BACK: Notified {o['panic_notified_to']}")
+            note_bits.append(f"CRITICAL READ-BACK: Notified {o['panic_notified_to']}")
         if o.get("delta_flag"):
             note_bits.append(f"DELTA ALERT: {o['delta_flag']}")
         if o.get("amended_reason"):
@@ -1775,7 +1793,7 @@ def generate_shift_handover_pdf(operator_name: str, shift_label: str, out_path: 
     pdf.set_text_color(56, 189, 248)
     pdf.set_font("Helvetica", "B", 14)
     pdf.set_xy(12, 7)
-    pdf.cell(186, 7, _pdf_safe(f"MONOCYTES DELEGATES LIS — SHIFT ENDORSEMENT ({shift_label})"))
+    pdf.cell(186, 7, _pdf_safe(f"MONOCYTES DELEGATES LIS — SHIFT HANDOVER ({shift_label})"))
     pdf.set_text_color(226, 232, 240)
     pdf.set_font("Helvetica", "", 9)
     pdf.set_xy(12, 16)
@@ -1801,7 +1819,7 @@ def generate_shift_handover_pdf(operator_name: str, shift_label: str, out_path: 
     y += 6
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_xy(12, y)
-    pdf.cell(186, 6, _pdf_safe(f"2. Critical Panic Value Read-Backs ({len(criticals)})"))
+    pdf.cell(186, 6, _pdf_safe(f"2. Critical Value Read-Backs ({len(criticals)})"))
     y += 7
     pdf.set_font("Helvetica", "", 8.5)
     for r in criticals[:20]:
@@ -1825,12 +1843,13 @@ class MainWorkspace(QWidget):
         self.selected_order_id = None
         self.qc_lockout_enabled = False
         self.failed_qc_tests = set()
+        self.editing_patient_id = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Clean Top Header Bar
+        # Top Header Bar
         top_bar = QFrame()
         top_bar.setObjectName("TopHeaderBar")
         top_bar.setFixedHeight(52)
@@ -1856,7 +1875,10 @@ class MainWorkspace(QWidget):
         tb_lay.addWidget(self.lbl_clock)
 
         role_short = "Pathologist" if "Pathologist" in self.user["role"] else "RMT"
-        lbl_op = QLabel(f"{self.user['name']}  •  {role_short}")
+        op_full = f"{self.user['name']}  •  {role_short}"
+        lbl_op = QLabel(op_full)
+        lbl_op.setToolTip(op_full)
+        lbl_op.setMaximumWidth(320)
         lbl_op.setStyleSheet(
             "background-color: #131C31; border: 1px solid #334155; color: #E2E8F0; "
             "border-radius: 6px; padding: 4px 12px; font-weight: 600;"
@@ -1870,7 +1892,7 @@ class MainWorkspace(QWidget):
 
         root.addWidget(top_bar)
 
-        # Main Tabbed Workspace (No sparkline KPI cards cluttering the workbench)
+        # Main Tabbed Workspace
         body = QWidget()
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(12, 10, 12, 12)
@@ -1879,11 +1901,11 @@ class MainWorkspace(QWidget):
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_worklist_tab(), "Worklist")
         self.tabs.addTab(self._build_requisition_tab(), "New Order")
+        self.tabs.addTab(self._build_patients_tab(), "Patients")
         self.tabs.addTab(self._build_pathologist_tab(), "Pathologist Review")
         self.tabs.addTab(self._build_qc_tab(), "Quality Control")
-        self.tabs.addTab(self._build_patients_tab(), "Patients")
         self.tabs.addTab(self._build_catalog_tab(), "Test Catalog")
-        self.tabs.addTab(self._build_admin_tab(), "Admin & Handover")
+        self.tabs.addTab(self._build_admin_tab(), "Reports & Admin")
         body_lay.addWidget(self.tabs, 1)
 
         root.addWidget(body, 1)
@@ -1915,7 +1937,6 @@ class MainWorkspace(QWidget):
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(10)
 
-        # Clean Filter, Quick Counter & New Order Bar
         flt = QHBoxLayout()
         flt.setSpacing(8)
 
@@ -1963,7 +1984,7 @@ class MainWorkspace(QWidget):
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
         self.tbl_worklist.setColumnWidth(1, 130)
-        self.tbl_worklist.setColumnWidth(2, 165)
+        self.tbl_worklist.setColumnWidth(2, 175)
         self.tbl_worklist.setColumnWidth(3, 195)
         self.tbl_worklist.setColumnWidth(4, 125)
         self.tbl_worklist.setColumnWidth(5, 72)
@@ -1973,16 +1994,20 @@ class MainWorkspace(QWidget):
         self.tbl_worklist.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_worklist.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_worklist.setAlternatingRowColors(True)
+        self.tbl_worklist.setWordWrap(True)
+        self.tbl_worklist.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.tbl_worklist.itemSelectionChanged.connect(self._on_worklist_select)
         self.tbl_worklist.doubleClicked.connect(lambda: self.in_result.setFocus())
         splitter.addWidget(self.tbl_worklist)
 
-        # Right: Clean Result Entry & Specimen Inspector
+        # Right: Scrollable Specimen Inspector & Result Entry
         scroll = QScrollArea()
+        scroll.setObjectName("DarkScroll")
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(400)
-        insp = QFrame()
-        insp.setObjectName("SurfaceCard")
+        scroll.setMinimumWidth(390)
+
+        insp = QWidget()
+        insp.setObjectName("CardScrollContent")
         il = QVBoxLayout(insp)
         il.setContentsMargins(16, 14, 16, 14)
         il.setSpacing(10)
@@ -2003,7 +2028,6 @@ class MainWorkspace(QWidget):
         self.range_gauge = VectorRangeGauge()
         il.addWidget(self.range_gauge)
 
-        # Section 1: Result Verification
         grp_res = QLabel("RESULT ENTRY & VERIFICATION")
         grp_res.setObjectName("GroupTitle")
         il.addWidget(grp_res)
@@ -2031,7 +2055,6 @@ class MainWorkspace(QWidget):
         act_row.addWidget(btn_reject, 1)
         il.addLayout(act_row)
 
-        # Section 2: Specimen Handling & Clinical Tools
         grp_tools = QLabel("SPECIMEN HANDLING & BENCH TOOLS")
         grp_tools.setObjectName("GroupTitle")
         il.addWidget(grp_tools)
@@ -2060,7 +2083,6 @@ class MainWorkspace(QWidget):
         tools_row.addWidget(btn_abx)
         il.addLayout(tools_row)
 
-        # Section 3: Reports & History
         grp_rep = QLabel("REPORTS & PATIENT RECORD")
         grp_rep.setObjectName("GroupTitle")
         il.addWidget(grp_rep)
@@ -2108,7 +2130,8 @@ class MainWorkspace(QWidget):
         self.lbl_insp_spec.setText(f"{o['specimen_id']}  •  {o['test_name']}")
         slot_txt = o["storage_slot"] or "Unassigned"
         self.lbl_insp_meta.setText(
-            f"Patient: {o['full_name']} ({o['mrn']})  |  {o['sex'] or '-'} / {o['dob'] or '-'}\n"
+            f"Patient: {o['full_name']} ({o['mrn']})\n"
+            f"Demographics: {o['sex'] or '-'}  |  DOB/Age: {o['dob'] or '-'}\n"
             f"Priority: {o['priority']}  |  Stage: {o['status']}  |  Storage: {slot_txt}\n"
             f"Reference Range: {o['ref_range'] or '-'} {o['unit'] or ''}"
         )
@@ -2430,19 +2453,28 @@ class MainWorkspace(QWidget):
         lay.setContentsMargins(12, 12, 12, 12)
         lay.setSpacing(14)
 
-        # Left: Patient Details
-        left = QFrame()
-        left.setObjectName("SurfaceCard")
+        # Left: Scrollable Patient & Order Details
+        left_scroll = QScrollArea()
+        left_scroll.setObjectName("DarkScroll")
+        left_scroll.setWidgetResizable(True)
+
+        left = QWidget()
+        left.setObjectName("CardScrollContent")
         ll = QVBoxLayout(left)
-        ll.setContentsMargins(16, 16, 16, 16)
+        ll.setContentsMargins(18, 16, 18, 16)
         ll.setSpacing(10)
 
         lbl = QLabel("1. Patient & Order Details")
         lbl.setObjectName("SectionHeader")
         ll.addWidget(lbl)
 
-        ll.addWidget(QLabel("Existing Patient (or leave as New Patient):"))
+        l_exist = QLabel("Select Registered Patient (or leave on New Patient):")
+        l_exist.setObjectName("FieldLabel")
+        ll.addWidget(l_exist)
+
         self.cmb_req_patient = QComboBox()
+        self.cmb_req_patient.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.cmb_req_patient.setMinimumContentsLength(22)
         self.cmb_req_patient.currentIndexChanged.connect(self._on_req_patient_pick)
         ll.addWidget(self.cmb_req_patient)
 
@@ -2450,22 +2482,40 @@ class MainWorkspace(QWidget):
         self.in_pt_mrn = QLineEdit(); self.in_pt_mrn.setPlaceholderText("MRN (auto-generated if blank)")
         self.in_pt_dob = QLineEdit(); self.in_pt_dob.setPlaceholderText("DOB (YYYY-MM-DD) or Age")
         self.cmb_pt_sex = QComboBox(); self.cmb_pt_sex.addItems(["Female", "Male", "Other"])
+        self.in_pt_contact = QLineEdit(); self.in_pt_contact.setPlaceholderText("Contact Number (Optional)")
         self.in_pt_md = QLineEdit(); self.in_pt_md.setPlaceholderText("Requesting Physician (e.g., Dr. Santos)")
 
-        ll.addWidget(QLabel("Patient Full Name:")); ll.addWidget(self.in_pt_name)
-        ll.addWidget(QLabel("Medical Record Number (MRN):")); ll.addWidget(self.in_pt_mrn)
-        r_ds = QHBoxLayout()
-        r_ds.addWidget(self.in_pt_dob); r_ds.addWidget(self.cmb_pt_sex)
-        ll.addLayout(r_ds)
-        ll.addWidget(QLabel("Requesting Physician:")); ll.addWidget(self.in_pt_md)
+        for title_txt, widget in [
+            ("Patient Full Name:", self.in_pt_name),
+            ("Medical Record Number (MRN):", self.in_pt_mrn),
+        ]:
+            fl = QLabel(title_txt); fl.setObjectName("FieldLabel")
+            ll.addWidget(fl); ll.addWidget(widget)
 
+        fl_ds = QLabel("Date of Birth / Age & Sex:"); fl_ds.setObjectName("FieldLabel")
+        ll.addWidget(fl_ds)
+        r_ds = QHBoxLayout()
+        r_ds.addWidget(self.in_pt_dob, 2)
+        r_ds.addWidget(self.cmb_pt_sex, 1)
+        ll.addLayout(r_ds)
+
+        for title_txt, widget in [
+            ("Contact Number:", self.in_pt_contact),
+            ("Requesting Physician:", self.in_pt_md),
+        ]:
+            fl = QLabel(title_txt); fl.setObjectName("FieldLabel")
+            ll.addWidget(fl); ll.addWidget(widget)
+
+        fl_pr = QLabel("Order Priority & Bench Rack Slot:"); fl_pr.setObjectName("FieldLabel")
+        ll.addWidget(fl_pr)
         r_pr = QHBoxLayout()
         self.cmb_req_priority = QComboBox(); self.cmb_req_priority.addItems(["Routine", "STAT", "Urgent"])
         self.in_req_slot = QLineEdit("Bench Rack A1")
-        r_pr.addWidget(QLabel("Priority:")); r_pr.addWidget(self.cmb_req_priority)
-        r_pr.addWidget(QLabel("Rack Slot:")); r_pr.addWidget(self.in_req_slot)
+        r_pr.addWidget(self.cmb_req_priority, 1)
+        r_pr.addWidget(self.in_req_slot, 1)
         ll.addLayout(r_pr)
 
+        ll.addSpacing(6)
         self.btn_submit_req = QPushButton("Create Order (0 Assays)")
         self.btn_submit_req.setObjectName("SuccessBtn")
         self.btn_submit_req.setMinimumHeight(42)
@@ -2473,48 +2523,65 @@ class MainWorkspace(QWidget):
         ll.addWidget(self.btn_submit_req)
         ll.addStretch()
 
-        # Right: Preset Panels + Assay Selection
+        left_scroll.setWidget(left)
+
+        # Right: Preset Panels + Dark Scrollable Assay Selection List
         right = QFrame()
         right.setObjectName("SurfaceCard")
         rl = QVBoxLayout(right)
-        rl.setContentsMargins(16, 16, 16, 16)
+        rl.setContentsMargins(18, 16, 18, 16)
         rl.setSpacing(10)
 
-        lbl2 = QLabel("2. Preset Panels & Assays")
+        lbl2 = QLabel("2. Select Panels & Assays")
         lbl2.setObjectName("SectionHeader")
         rl.addWidget(lbl2)
 
         panel_grid = QGridLayout()
+        panel_grid.setSpacing(6)
         for idx, (p_name, tests_list) in enumerate(PRESET_PANELS.items()):
             b = QPushButton(f"+ {p_name}")
             b.clicked.connect(lambda checked=False, tl=tests_list: self._apply_preset_panel(tl))
             panel_grid.addWidget(b, idx // 3, idx % 3)
-        btn_clr = QPushButton("Clear Selection")
-        btn_clr.clicked.connect(self._clear_test_checks)
-        panel_grid.addWidget(btn_clr, 2, 0, 1, 3)
         rl.addLayout(panel_grid)
 
+        filter_row = QHBoxLayout()
         self.in_assay_filter = QLineEdit()
-        self.in_assay_filter.setPlaceholderText("Filter assays by name or tube type...")
+        self.in_assay_filter.setPlaceholderText("Filter assays by name, department, or tube...")
         self.in_assay_filter.textChanged.connect(self._filter_assay_checkboxes)
-        rl.addWidget(self.in_assay_filter)
+        filter_row.addWidget(self.in_assay_filter, 3)
+
+        btn_clr = QPushButton("Clear All")
+        btn_clr.clicked.connect(self._clear_test_checks)
+        filter_row.addWidget(btn_clr)
+        rl.addLayout(filter_row)
 
         scroll = QScrollArea()
+        scroll.setObjectName("DarkScroll")
         scroll.setWidgetResizable(True)
+
         chk_container = QWidget()
-        self.chk_grid = QGridLayout(chk_container)
+        chk_container.setObjectName("ScrollContent")
+        self.chk_list_layout = QVBoxLayout(chk_container)
+        self.chk_list_layout.setContentsMargins(10, 8, 10, 8)
+        self.chk_list_layout.setSpacing(2)
+
         self.test_checkboxes = {}
+        self.assay_row_widgets = []
         scroll.setWidget(chk_container)
         rl.addWidget(scroll, 1)
 
-        lay.addWidget(left, 2)
+        lay.addWidget(left_scroll, 2)
         lay.addWidget(right, 3)
         return w
 
     def _on_req_patient_pick(self):
         pid = self.cmb_req_patient.currentData()
         if not pid:
-            self.in_pt_name.clear(); self.in_pt_mrn.clear(); self.in_pt_dob.clear(); self.in_pt_md.clear()
+            self.in_pt_name.clear()
+            self.in_pt_mrn.clear()
+            self.in_pt_dob.clear()
+            self.in_pt_contact.clear()
+            self.in_pt_md.clear()
             return
         conn = get_conn()
         pt = conn.execute("SELECT * FROM patients WHERE id = ?", (pid,)).fetchone()
@@ -2524,6 +2591,7 @@ class MainWorkspace(QWidget):
             self.in_pt_mrn.setText(pt["mrn"])
             self.in_pt_dob.setText(pt["dob"] or "")
             self.cmb_pt_sex.setCurrentText(pt["sex"] or "Female")
+            self.in_pt_contact.setText(pt["contact"] or "")
             self.in_pt_md.setText(pt["physician"] or "")
 
     def _update_selected_assay_count(self):
@@ -2532,8 +2600,8 @@ class MainWorkspace(QWidget):
 
     def _filter_assay_checkboxes(self, text: str):
         q = text.strip().lower()
-        for t_name, cb in self.test_checkboxes.items():
-            cb.setVisible(not q or q in cb.text().lower())
+        for row_widget, search_blob in self.assay_row_widgets:
+            row_widget.setVisible(not q or q in search_blob)
 
     def _apply_preset_panel(self, test_names: list):
         for t in test_names:
@@ -2565,11 +2633,17 @@ class MainWorkspace(QWidget):
         existing = cur.execute("SELECT id FROM patients WHERE mrn = ?", (mrn,)).fetchone()
         if existing:
             pid = existing["id"]
-            cur.execute("UPDATE patients SET full_name=?, dob=?, sex=?, physician=? WHERE id=?",
-                        (name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(), self.in_pt_md.text().strip(), pid))
+            cur.execute(
+                "UPDATE patients SET full_name=?, dob=?, sex=?, contact=?, physician=? WHERE id=?",
+                (name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(),
+                 self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), pid)
+            )
         else:
-            cur.execute("INSERT INTO patients (mrn, full_name, dob, sex, physician, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                        (mrn, name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(), self.in_pt_md.text().strip(), now))
+            cur.execute(
+                "INSERT INTO patients (mrn, full_name, dob, sex, contact, physician, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (mrn, name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(),
+                 self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), now)
+            )
             pid = cur.lastrowid
 
         for t_name in selected_tests:
@@ -2594,7 +2668,202 @@ class MainWorkspace(QWidget):
         QMessageBox.information(self, "Order Created", f"Specimen ID: {spec_id}\nPatient: {name}\nAssays Queued: {len(selected_tests)}")
 
     # --------------------------------------------------------------------------
-    # TAB 3: PATHOLOGIST REVIEW & CO-SIGN
+    # TAB 3: PATIENTS REGISTRATION & DIRECTORY
+    # --------------------------------------------------------------------------
+    def _build_patients_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QHBoxLayout(w)
+        lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(14)
+
+        # Left: Scrollable Patient Registration / Profile Editor
+        reg_scroll = QScrollArea()
+        reg_scroll.setObjectName("DarkScroll")
+        reg_scroll.setWidgetResizable(True)
+
+        reg_card = QWidget()
+        reg_card.setObjectName("CardScrollContent")
+        rl = QVBoxLayout(reg_card)
+        rl.setContentsMargins(18, 16, 18, 16)
+        rl.setSpacing(10)
+
+        self.lbl_pt_form_title = QLabel("Register New Patient")
+        self.lbl_pt_form_title.setObjectName("SectionHeader")
+        rl.addWidget(self.lbl_pt_form_title)
+
+        sub = QLabel("Create a new patient record or click a row on the right to update details.")
+        sub.setObjectName("MutedLabel")
+        sub.setWordWrap(True)
+        rl.addWidget(sub)
+
+        self.reg_name = QLineEdit(); self.reg_name.setPlaceholderText("Full Name (Last, First MI)")
+        self.reg_mrn = QLineEdit(); self.reg_mrn.setPlaceholderText("MRN (auto-generated if blank)")
+        self.reg_dob = QLineEdit(); self.reg_dob.setPlaceholderText("YYYY-MM-DD or Age (e.g. 34y)")
+        self.reg_sex = QComboBox(); self.reg_sex.addItems(["Female", "Male", "Other"])
+        self.reg_contact = QLineEdit(); self.reg_contact.setPlaceholderText("Phone / Mobile Number")
+        self.reg_md = QLineEdit(); self.reg_md.setPlaceholderText("Attending / Requesting Physician")
+
+        for label_txt, widget in [
+            ("Full Name:", self.reg_name),
+            ("Medical Record Number (MRN):", self.reg_mrn),
+            ("Date of Birth / Age:", self.reg_dob),
+            ("Sex:", self.reg_sex),
+            ("Contact Number:", self.reg_contact),
+            ("Requesting Physician:", self.reg_md),
+        ]:
+            fl = QLabel(label_txt); fl.setObjectName("FieldLabel")
+            rl.addWidget(fl); rl.addWidget(widget)
+
+        rl.addSpacing(6)
+        btn_row = QHBoxLayout()
+        btn_save_pt = QPushButton("Save Patient")
+        btn_save_pt.setObjectName("SuccessBtn")
+        btn_save_pt.setMinimumHeight(38)
+        btn_save_pt.clicked.connect(self._save_patient_profile)
+        btn_row.addWidget(btn_save_pt, 2)
+
+        btn_clear_pt = QPushButton("Clear")
+        btn_clear_pt.setMinimumHeight(38)
+        btn_clear_pt.clicked.connect(self._clear_patient_form)
+        btn_row.addWidget(btn_clear_pt, 1)
+        rl.addLayout(btn_row)
+
+        btn_open_hist = QPushButton("View Selected Patient Lab History")
+        btn_open_hist.setObjectName("PrimaryBtn")
+        btn_open_hist.setMinimumHeight(36)
+        btn_open_hist.clicked.connect(self._open_registry_selected_history)
+        rl.addWidget(btn_open_hist)
+
+        rl.addStretch()
+        reg_scroll.setWidget(reg_card)
+
+        # Right: Searchable Patient Directory
+        dir_card = QFrame()
+        dir_card.setObjectName("SurfaceCard")
+        dl = QVBoxLayout(dir_card)
+        dl.setContentsMargins(16, 16, 16, 16)
+        dl.setSpacing(10)
+
+        top = QHBoxLayout()
+        lbl_dir = QLabel("Registered Patients")
+        lbl_dir.setObjectName("SectionHeader")
+        top.addWidget(lbl_dir)
+        top.addStretch()
+
+        self.in_pt_search = QLineEdit()
+        self.in_pt_search.setPlaceholderText("Search name, MRN, or physician...")
+        self.in_pt_search.setMinimumWidth(260)
+        self.in_pt_search.textChanged.connect(self.refresh_patients)
+        top.addWidget(self.in_pt_search)
+        dl.addLayout(top)
+
+        self.tbl_patients = QTableWidget(0, 7)
+        self.tbl_patients.setHorizontalHeaderLabels(["ID", "MRN", "Full Name", "DOB / Age", "Sex", "Contact", "Physician"])
+        self.tbl_patients.setColumnHidden(0, True)
+        p_hdr = self.tbl_patients.horizontalHeader()
+        p_hdr.setSectionResizeMode(QHeaderView.Interactive)
+        p_hdr.setStretchLastSection(True)
+        self.tbl_patients.setColumnWidth(1, 115)
+        self.tbl_patients.setColumnWidth(2, 200)
+        self.tbl_patients.setColumnWidth(3, 100)
+        self.tbl_patients.setColumnWidth(4, 70)
+        self.tbl_patients.setColumnWidth(5, 115)
+        self.tbl_patients.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_patients.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.tbl_patients.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_patients.setAlternatingRowColors(True)
+        self.tbl_patients.setWordWrap(True)
+        self.tbl_patients.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.tbl_patients.itemSelectionChanged.connect(self._on_patient_row_selected)
+        self.tbl_patients.doubleClicked.connect(self._on_patient_double_click)
+        dl.addWidget(self.tbl_patients, 1)
+
+        lay.addWidget(reg_scroll, 2)
+        lay.addWidget(dir_card, 3)
+        return w
+
+    def _clear_patient_form(self):
+        self.editing_patient_id = None
+        self.lbl_pt_form_title.setText("Register New Patient")
+        self.reg_name.clear()
+        self.reg_mrn.clear()
+        self.reg_dob.clear()
+        self.reg_sex.setCurrentIndex(0)
+        self.reg_contact.clear()
+        self.reg_md.clear()
+        self.tbl_patients.clearSelection()
+
+    def _on_patient_row_selected(self):
+        rows = self.tbl_patients.selectionModel().selectedRows()
+        if not rows:
+            return
+        pid = int(self.tbl_patients.item(rows[0].row(), 0).text())
+        conn = get_conn()
+        pt = conn.execute("SELECT * FROM patients WHERE id = ?", (pid,)).fetchone()
+        conn.close()
+        if not pt:
+            return
+        self.editing_patient_id = pid
+        self.lbl_pt_form_title.setText("Edit Patient Profile")
+        self.reg_name.setText(pt["full_name"] or "")
+        self.reg_mrn.setText(pt["mrn"] or "")
+        self.reg_dob.setText(pt["dob"] or "")
+        self.reg_sex.setCurrentText(pt["sex"] or "Female")
+        self.reg_contact.setText(pt["contact"] or "")
+        self.reg_md.setText(pt["physician"] or "")
+
+    def _save_patient_profile(self):
+        name = self.reg_name.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Missing Name", "Patient full name is required.")
+            return
+        mrn = self.reg_mrn.text().strip() or f"MRN-{random.randint(100000, 999999)}"
+        dob = self.reg_dob.text().strip()
+        sex = self.reg_sex.currentText()
+        contact = self.reg_contact.text().strip()
+        md = self.reg_md.text().strip()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        conn = get_conn()
+        try:
+            if self.editing_patient_id:
+                conn.execute(
+                    "UPDATE patients SET mrn=?, full_name=?, dob=?, sex=?, contact=?, physician=? WHERE id=?",
+                    (mrn, name, dob, sex, contact, md, self.editing_patient_id)
+                )
+                action = "PATIENT_UPDATED"
+            else:
+                conn.execute(
+                    "INSERT INTO patients (mrn, full_name, dob, sex, contact, physician, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (mrn, name, dob, sex, contact, md, now)
+                )
+                action = "PATIENT_REGISTERED"
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            QMessageBox.warning(self, "Duplicate MRN", f"MRN '{mrn}' already belongs to another patient.")
+            return
+        conn.close()
+
+        log_audit(self.user["name"], action, "-", f"{name} ({mrn})")
+        self._clear_patient_form()
+        self.refresh_all()
+        QMessageBox.information(self, "Saved", f"Patient record saved for {name} ({mrn}).")
+
+    def _open_registry_selected_history(self):
+        rows = self.tbl_patients.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.information(self, "Select Patient", "Select a patient row from the directory first.")
+            return
+        pid = int(self.tbl_patients.item(rows[0].row(), 0).text())
+        PatientHistoryDialog(pid, self).exec()
+
+    def _on_patient_double_click(self, idx):
+        pid = int(self.tbl_patients.item(idx.row(), 0).text())
+        PatientHistoryDialog(pid, self).exec()
+
+    # --------------------------------------------------------------------------
+    # TAB 4: PATHOLOGIST REVIEW & CO-SIGN
     # --------------------------------------------------------------------------
     def _build_pathologist_tab(self) -> QWidget:
         w = QWidget()
@@ -2607,6 +2876,7 @@ class MainWorkspace(QWidget):
         bl = QHBoxLayout(banner)
         info = QLabel("Pathologist Review Queue — Gaia Aubrey Manalo, MD (Critical values, amended results, blood smears, and cultures)")
         info.setStyleSheet("color: #CBD5E1; font-weight: 600;")
+        info.setWordWrap(True)
         bl.addWidget(info)
         lay.addWidget(banner)
 
@@ -2616,6 +2886,7 @@ class MainWorkspace(QWidget):
         self.tbl_path.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_path.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_path.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_path.setWordWrap(True)
         lay.addWidget(self.tbl_path, 1)
 
         sign_box = QFrame()
@@ -2666,7 +2937,7 @@ class MainWorkspace(QWidget):
         self.refresh_all()
 
     # --------------------------------------------------------------------------
-    # TAB 4: QUALITY CONTROL (LEVEY-JENNINGS)
+    # TAB 5: QUALITY CONTROL (LEVEY-JENNINGS)
     # --------------------------------------------------------------------------
     def _build_qc_tab(self) -> QWidget:
         w = QWidget()
@@ -2782,19 +3053,13 @@ class MainWorkspace(QWidget):
 
         self.tbl_qc.setRowCount(len(logs))
         for i, r in enumerate(logs):
-            self.tbl_qc.setItem(i, 0, QTableWidgetItem(r["logged_at"]))
-            self.tbl_qc.setItem(i, 1, QTableWidgetItem(r["label"]))
-            self.tbl_qc.setItem(i, 2, QTableWidgetItem(f"{r['measured']:g}"))
-            self.tbl_qc.setItem(i, 3, QTableWidgetItem(f"{r['z_score']:+.2f} SD"))
-            st = QTableWidgetItem(r["westgard_status"])
-            if "FAIL" in r["westgard_status"]:
-                st.setForeground(QColor("#FB7185"))
-            elif "WARN" in r["westgard_status"]:
-                st.setForeground(QColor("#FBBF24"))
-            else:
-                st.setForeground(QColor("#34D399"))
-            self.tbl_qc.setItem(i, 4, st)
-            self.tbl_qc.setItem(i, 5, QTableWidgetItem(r["operator"]))
+            self.tbl_qc.setItem(i, 0, _make_item(r["logged_at"]))
+            self.tbl_qc.setItem(i, 1, _make_item(r["label"]))
+            self.tbl_qc.setItem(i, 2, _make_item(f"{r['measured']:g}"))
+            self.tbl_qc.setItem(i, 3, _make_item(f"{r['z_score']:+.2f} SD"))
+            st_col = "#FB7185" if "FAIL" in r["westgard_status"] else ("#FBBF24" if "WARN" in r["westgard_status"] else "#34D399")
+            self.tbl_qc.setItem(i, 4, _make_item(r["westgard_status"], st_col))
+            self.tbl_qc.setItem(i, 5, _make_item(r["operator"]))
 
         ax = self.qc_canvas.ax
         ax.clear()
@@ -2824,36 +3089,6 @@ class MainWorkspace(QWidget):
         self.qc_canvas.draw()
 
     # --------------------------------------------------------------------------
-    # TAB 5: PATIENTS REGISTRY
-    # --------------------------------------------------------------------------
-    def _build_patients_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        lay.setContentsMargins(12, 12, 12, 12)
-        lay.setSpacing(10)
-
-        top = QHBoxLayout()
-        self.in_pt_search = QLineEdit()
-        self.in_pt_search.setPlaceholderText("Search patient name or MRN (Double-click any row to view cumulative lab history)...")
-        self.in_pt_search.textChanged.connect(self.refresh_patients)
-        top.addWidget(self.in_pt_search)
-        lay.addLayout(top)
-
-        self.tbl_patients = QTableWidget(0, 6)
-        self.tbl_patients.setHorizontalHeaderLabels(["ID", "MRN", "Full Patient Name", "DOB / Age", "Sex", "Requesting Physician"])
-        self.tbl_patients.setColumnHidden(0, True)
-        self.tbl_patients.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.tbl_patients.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.tbl_patients.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.tbl_patients.doubleClicked.connect(self._on_patient_double_click)
-        lay.addWidget(self.tbl_patients, 1)
-        return w
-
-    def _on_patient_double_click(self, idx):
-        pid = int(self.tbl_patients.item(idx.row(), 0).text())
-        PatientHistoryDialog(pid, self).exec()
-
-    # --------------------------------------------------------------------------
     # TAB 6: TEST CATALOG & REFERENCE RANGES
     # --------------------------------------------------------------------------
     def _build_catalog_tab(self) -> QWidget:
@@ -2864,30 +3099,58 @@ class MainWorkspace(QWidget):
 
         form = QFrame()
         form.setObjectName("SurfaceCard")
-        fl = QHBoxLayout(form)
-        self.cat_name = QLineEdit(); self.cat_name.setPlaceholderText("Assay Name")
+        fg = QGridLayout(form)
+        fg.setContentsMargins(14, 12, 14, 12)
+        fg.setSpacing(8)
+
+        self.cat_name = QLineEdit(); self.cat_name.setPlaceholderText("Assay Name (e.g. Serum Ferritin)")
         self.cat_dept = QComboBox(); self.cat_dept.addItems([
             "Hematology", "Clinical Chemistry", "Coagulation",
             "Immunology", "Serology", "Clinical Microscopy", "Microbiology"
         ])
-        self.cat_unit = QLineEdit(); self.cat_unit.setPlaceholderText("Unit (e.g. mg/dL)")
-        self.cat_lo = QLineEdit(); self.cat_lo.setPlaceholderText("Low")
-        self.cat_hi = QLineEdit(); self.cat_hi.setPlaceholderText("High")
         self.cat_tube = QComboBox(); self.cat_tube.addItems(list(TUBE_COLORS.keys()))
+        self.cat_unit = QLineEdit(); self.cat_unit.setPlaceholderText("Unit (e.g. mg/dL)")
+        self.cat_lo = QLineEdit(); self.cat_lo.setPlaceholderText("Normal Low")
+        self.cat_hi = QLineEdit(); self.cat_hi.setPlaceholderText("Normal High")
         btn_add_t = QPushButton("Save Assay")
         btn_add_t.setObjectName("PrimaryBtn")
         btn_add_t.clicked.connect(self._save_catalog_test)
 
-        for widget in (self.cat_name, self.cat_dept, self.cat_unit, self.cat_lo, self.cat_hi, self.cat_tube, btn_add_t):
-            fl.addWidget(widget)
+        fg.addWidget(self.cat_name, 0, 0, 1, 2)
+        fg.addWidget(self.cat_dept, 0, 2)
+        fg.addWidget(self.cat_tube, 0, 3)
+
+        fg.addWidget(self.cat_unit, 1, 0)
+        fg.addWidget(self.cat_lo, 1, 1)
+        fg.addWidget(self.cat_hi, 1, 2)
+        fg.addWidget(btn_add_t, 1, 3)
+
         lay.addWidget(form)
 
         self.tbl_catalog = QTableWidget(0, 7)
         self.tbl_catalog.setHorizontalHeaderLabels(["Test Name", "Department", "Unit", "Low", "High", "Critical Cutoffs", "Container"])
         self.tbl_catalog.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_catalog.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_catalog.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_catalog.setWordWrap(True)
+        self.tbl_catalog.itemSelectionChanged.connect(self._on_catalog_row_select)
         lay.addWidget(self.tbl_catalog, 1)
         return w
+
+    def _on_catalog_row_select(self):
+        rows = self.tbl_catalog.selectionModel().selectedRows()
+        if not rows:
+            return
+        r = rows[0].row()
+        self.cat_name.setText(self.tbl_catalog.item(r, 0).text())
+        self.cat_dept.setCurrentText(self.tbl_catalog.item(r, 1).text())
+        unit_txt = self.tbl_catalog.item(r, 2).text()
+        self.cat_unit.setText("" if unit_txt == "-" else unit_txt)
+        lo_txt = self.tbl_catalog.item(r, 3).text()
+        self.cat_lo.setText("" if lo_txt == "-" else lo_txt)
+        hi_txt = self.tbl_catalog.item(r, 4).text()
+        self.cat_hi.setText("" if hi_txt == "-" else hi_txt)
+        self.cat_tube.setCurrentText(self.tbl_catalog.item(r, 6).text())
 
     def _save_catalog_test(self):
         name = self.cat_name.text().strip()
@@ -2910,91 +3173,106 @@ class MainWorkspace(QWidget):
         """, (name, self.cat_dept.currentText(), self.cat_unit.text().strip(), lo, hi, self.cat_tube.currentText(), ref))
         conn.commit()
         conn.close()
-        self.cat_name.clear(); self.cat_lo.clear(); self.cat_hi.clear()
+        self.cat_name.clear(); self.cat_unit.clear(); self.cat_lo.clear(); self.cat_hi.clear()
         self.refresh_all()
 
     # --------------------------------------------------------------------------
-    # TAB 7: ADMIN, SHIFT HANDOVER & SYSTEM
+    # TAB 7: REPORTS, STAFF ROSTER & AUDIT LOG (FLAT, NO NESTED TABS)
     # --------------------------------------------------------------------------
     def _build_admin_tab(self) -> QWidget:
         w = QWidget()
-        lay = QVBoxLayout(w)
+        lay = QHBoxLayout(w)
         lay.setContentsMargins(12, 12, 12, 12)
+        lay.setSpacing(14)
 
-        sub_tabs = QTabWidget()
+        # Left Column: Shift Handover, Data Exports & Staff Roster
+        left_col = QVBoxLayout()
+        left_col.setSpacing(12)
 
-        # Sub-tab 1: Shift Handover & Workload Summary
-        ho_w = QWidget()
-        ho_l = QVBoxLayout(ho_w)
-        ho_l.setContentsMargins(10, 10, 10, 10)
-        ho_l.setSpacing(10)
+        exp_card = QFrame()
+        exp_card.setObjectName("SurfaceCard")
+        el = QVBoxLayout(exp_card)
+        el.setContentsMargins(16, 14, 16, 14)
+        el.setSpacing(10)
 
-        top_ho = QFrame()
-        top_ho.setObjectName("SurfaceCard")
-        tl = QHBoxLayout(top_ho)
-        tl.addWidget(QLabel("Shift:"))
+        lbl_exp = QLabel("Shift Handover & Data Exports")
+        lbl_exp.setObjectName("SectionHeader")
+        el.addWidget(lbl_exp)
+
+        ho_row = QHBoxLayout()
         self.cmb_shift = QComboBox()
         self.cmb_shift.addItems(["AM Shift (06:00 - 14:00)", "PM Shift (14:00 - 22:00)", "Night Shift (22:00 - 06:00)"])
-        tl.addWidget(self.cmb_shift)
-        btn_ho = QPushButton("Export Shift Handover PDF")
+        ho_row.addWidget(self.cmb_shift, 2)
+
+        btn_ho = QPushButton("Shift Handover PDF")
         btn_ho.setObjectName("PrimaryBtn")
         btn_ho.clicked.connect(self._export_shift_handover)
-        tl.addWidget(btn_ho)
-        tl.addStretch()
+        ho_row.addWidget(btn_ho, 1)
+        el.addLayout(ho_row)
 
+        db_row = QHBoxLayout()
         btn_csv = QPushButton("Export Worklist CSV")
         btn_csv.clicked.connect(self._export_csv)
         btn_bak = QPushButton("Backup Database (.db)")
         btn_bak.setObjectName("SuccessBtn")
         btn_bak.clicked.connect(self._backup_db)
-        tl.addWidget(btn_csv)
-        tl.addWidget(btn_bak)
-        ho_l.addWidget(top_ho)
+        db_row.addWidget(btn_csv)
+        db_row.addWidget(btn_bak)
+        el.addLayout(db_row)
 
-        self.analytics_canvas = MplCanvas(width=9.0, height=4.2, dpi=100)
-        ho_l.addWidget(self.analytics_canvas, 1)
-        sub_tabs.addTab(ho_w, "Shift Handover & Summary")
+        left_col.addWidget(exp_card)
 
-        # Sub-tab 2: Staff Roster
-        st_w = QWidget()
-        st_l = QVBoxLayout(st_w)
-        st_l.setContentsMargins(10, 10, 10, 10)
-        st_l.setSpacing(10)
+        st_card = QFrame()
+        st_card.setObjectName("SurfaceCard")
+        sl = QVBoxLayout(st_card)
+        sl.setContentsMargins(16, 14, 16, 14)
+        sl.setSpacing(10)
 
-        add_card = QFrame()
-        add_card.setObjectName("SurfaceCard")
-        add_r = QHBoxLayout(add_card)
-        self.st_pin = QLineEdit(); self.st_pin.setPlaceholderText("4-Digit PIN")
+        lbl_st = QLabel("Authorized Staff Roster")
+        lbl_st.setObjectName("SectionHeader")
+        sl.addWidget(lbl_st)
+
+        add_r = QHBoxLayout()
+        self.st_pin = QLineEdit(); self.st_pin.setPlaceholderText("4-Digit PIN"); self.st_pin.setMaximumWidth(100)
         self.st_name = QLineEdit(); self.st_name.setPlaceholderText("Full Name & Credentials")
         self.st_role = QComboBox(); self.st_role.addItems(["Medical Technologist (RMT)", "Pathologist"])
-        btn_st = QPushButton("Save Staff")
+        btn_st = QPushButton("Save")
         btn_st.setObjectName("PrimaryBtn")
         btn_st.clicked.connect(self._save_staff)
         add_r.addWidget(self.st_pin)
         add_r.addWidget(self.st_name, 2)
         add_r.addWidget(self.st_role, 1)
         add_r.addWidget(btn_st)
-        st_l.addWidget(add_card)
+        sl.addLayout(add_r)
 
         self.tbl_staff = QTableWidget(0, 3)
         self.tbl_staff.setHorizontalHeaderLabels(["PIN", "Operator Name", "Role"])
         self.tbl_staff.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_staff.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        st_l.addWidget(self.tbl_staff, 1)
-        sub_tabs.addTab(st_w, "Staff Roster")
+        sl.addWidget(self.tbl_staff, 1)
 
-        # Sub-tab 3: Audit Log
-        aud_w = QWidget()
-        aud_l = QVBoxLayout(aud_w)
-        aud_l.setContentsMargins(10, 10, 10, 10)
+        left_col.addWidget(st_card, 1)
+
+        # Right Column: Audit Log
+        aud_card = QFrame()
+        aud_card.setObjectName("SurfaceCard")
+        al = QVBoxLayout(aud_card)
+        al.setContentsMargins(16, 14, 16, 14)
+        al.setSpacing(10)
+
+        lbl_aud = QLabel("Activity & Audit Log")
+        lbl_aud.setObjectName("SectionHeader")
+        al.addWidget(lbl_aud)
+
         self.tbl_audit = QTableWidget(0, 5)
         self.tbl_audit.setHorizontalHeaderLabels(["Timestamp", "Operator", "Action", "Specimen ID", "Details"])
         self.tbl_audit.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_audit.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        aud_l.addWidget(self.tbl_audit, 1)
-        sub_tabs.addTab(aud_w, "Audit Log")
+        self.tbl_audit.setWordWrap(True)
+        al.addWidget(self.tbl_audit, 1)
 
-        lay.addWidget(sub_tabs)
+        lay.addLayout(left_col, 1)
+        lay.addWidget(aud_card, 1)
         return w
 
     def _export_shift_handover(self):
@@ -3005,36 +3283,6 @@ class MainWorkspace(QWidget):
             log_audit(self.user["name"], "SHIFT_HANDOVER_PDF", "-", shift)
             if sys.platform == "win32":
                 os.startfile(path)
-
-    def refresh_analytics(self):
-        conn = get_conn()
-        dept_rows = conn.execute("SELECT department, COUNT(*) as cnt FROM orders GROUP BY department ORDER BY cnt DESC").fetchall()
-        flag_rows = conn.execute("SELECT COALESCE(flag, status) as flg, COUNT(*) as cnt FROM orders GROUP BY flg").fetchall()
-        conn.close()
-
-        fig = self.analytics_canvas.fig
-        fig.clear()
-        ax1 = fig.add_subplot(121)
-        ax2 = fig.add_subplot(122)
-        self.analytics_canvas._style_ax(ax1)
-        self.analytics_canvas._style_ax(ax2)
-
-        if dept_rows:
-            depts = [r["department"][:16] for r in dept_rows]
-            cnts = [r["cnt"] for r in dept_rows]
-            bars = ax1.barh(depts[::-1], cnts[::-1], color="#38BDF8", height=0.55)
-            ax1.bar_label(bars, padding=4, color="#E2E8F0", fontsize=8)
-        ax1.set_title("Orders by Section", fontsize=10, fontweight="bold")
-
-        if flag_rows:
-            labels = [r["flg"] for r in flag_rows]
-            vals = [r["cnt"] for r in flag_rows]
-            palette = ["#10B981", "#38BDF8", "#F59E0B", "#F43F5E", "#818CF8", "#64748B"]
-            ax2.pie(vals, labels=labels, autopct="%1.0f%%", colors=palette[:len(vals)], textprops={"color": "#E2E8F0", "fontsize": 8})
-        ax2.set_title("Order Status & Flags", fontsize=10, fontweight="bold")
-
-        fig.tight_layout()
-        self.analytics_canvas.draw()
 
     def _save_staff(self):
         pin = self.st_pin.text().strip()
@@ -3087,7 +3335,6 @@ class MainWorkspace(QWidget):
         self.refresh_pathologist_queue()
         self.refresh_qc_targets()
         self.refresh_qc()
-        self.refresh_analytics()
         self.refresh_patients()
         self.refresh_system()
 
@@ -3135,16 +3382,14 @@ class MainWorkspace(QWidget):
         self.tbl_worklist.setRowCount(len(filtered))
         now_dt = datetime.now()
         for i, r in enumerate(filtered):
-            self.tbl_worklist.setItem(i, 0, QTableWidgetItem(str(r["id"])))
-            self.tbl_worklist.setItem(i, 1, QTableWidgetItem(r["specimen_id"]))
-            self.tbl_worklist.setItem(i, 2, QTableWidgetItem(r["full_name"]))
-            self.tbl_worklist.setItem(i, 3, QTableWidgetItem(r["test_name"]))
-            self.tbl_worklist.setItem(i, 4, QTableWidgetItem(r["department"]))
+            self.tbl_worklist.setItem(i, 0, _make_item(str(r["id"])))
+            self.tbl_worklist.setItem(i, 1, _make_item(r["specimen_id"]))
+            self.tbl_worklist.setItem(i, 2, _make_item(r["full_name"]))
+            self.tbl_worklist.setItem(i, 3, _make_item(r["test_name"]))
+            self.tbl_worklist.setItem(i, 4, _make_item(r["department"]))
 
-            pr_item = QTableWidgetItem(r["priority"])
-            if r["priority"] == "STAT":
-                pr_item.setForeground(QColor("#FB7185"))
-            self.tbl_worklist.setItem(i, 5, pr_item)
+            pr_col = "#FB7185" if r["priority"] == "STAT" else None
+            self.tbl_worklist.setItem(i, 5, _make_item(r["priority"], pr_col))
 
             tat_str = "Done"
             if r["status"] not in ("Verified", "Amended", "Rejected") and r["ordered_at"]:
@@ -3155,24 +3400,25 @@ class MainWorkspace(QWidget):
                     tat_str = f"{mins}m / {sla}m"
                 except Exception:
                     tat_str = "-"
-            self.tbl_worklist.setItem(i, 6, QTableWidgetItem(tat_str))
+            self.tbl_worklist.setItem(i, 6, _make_item(tat_str))
 
             res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
-            self.tbl_worklist.setItem(i, 7, QTableWidgetItem(res_txt))
+            self.tbl_worklist.setItem(i, 7, _make_item(res_txt))
 
             badge = r["flag"] if r["flag"] else r["status"]
-            st_item = QTableWidgetItem(badge)
             if badge in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL"):
-                st_item.setForeground(QColor("#FB7185"))
+                st_col = "#FB7185"
             elif badge == "LOW":
-                st_item.setForeground(QColor("#FBBF24"))
+                st_col = "#FBBF24"
             elif badge == "NORMAL":
-                st_item.setForeground(QColor("#34D399"))
+                st_col = "#34D399"
             elif badge == "REJECTED":
-                st_item.setForeground(QColor("#94A3B8"))
+                st_col = "#94A3B8"
             else:
-                st_item.setForeground(QColor("#38BDF8"))
-            self.tbl_worklist.setItem(i, 8, st_item)
+                st_col = "#38BDF8"
+            self.tbl_worklist.setItem(i, 8, _make_item(badge, st_col))
+
+        self.tbl_worklist.resizeRowsToContents()
 
     def refresh_requisition_catalog(self):
         conn = get_conn()
@@ -3193,22 +3439,47 @@ class MainWorkspace(QWidget):
         self.cmb_req_patient.blockSignals(False)
 
         if not self.test_checkboxes:
-            for idx, t in enumerate(tests):
-                cb = QCheckBox(f"{t['test_name']}  [{t['tube_type']}]")
+            for t in tests:
+                row_w = QFrame()
+                row_w.setStyleSheet("""
+                    QFrame {
+                        background-color: transparent;
+                        border-bottom: 1px solid #161F33;
+                    }
+                    QFrame:hover {
+                        background-color: #11192D;
+                        border-radius: 6px;
+                    }
+                """)
+                rl = QHBoxLayout(row_w)
+                rl.setContentsMargins(8, 6, 8, 6)
+                rl.setSpacing(10)
+
+                cb = QCheckBox(t["test_name"])
                 cb.stateChanged.connect(self._update_selected_assay_count)
-                self.chk_grid.addWidget(cb, idx // 2, idx % 2)
+                rl.addWidget(cb, 1)
+
+                tube_lbl = QLabel(t["tube_type"] or "")
+                tube_lbl.setStyleSheet("color: #94A3B8; font-size: 8.5pt; border: none; background: transparent;")
+                rl.addWidget(tube_lbl)
+
+                self.chk_list_layout.addWidget(row_w)
                 self.test_checkboxes[t["test_name"]] = cb
+                blob = f"{t['test_name']} {t['department']} {t['tube_type']}".lower()
+                self.assay_row_widgets.append((row_w, blob))
+            self.chk_list_layout.addStretch()
 
         self.tbl_catalog.setRowCount(len(tests))
         for i, t in enumerate(tests):
-            self.tbl_catalog.setItem(i, 0, QTableWidgetItem(t["test_name"]))
-            self.tbl_catalog.setItem(i, 1, QTableWidgetItem(t["department"]))
-            self.tbl_catalog.setItem(i, 2, QTableWidgetItem(t["unit"] or "-"))
-            self.tbl_catalog.setItem(i, 3, QTableWidgetItem(str(t["low_val"]) if t["low_val"] is not None else "-"))
-            self.tbl_catalog.setItem(i, 4, QTableWidgetItem(str(t["high_val"]) if t["high_val"] is not None else "-"))
+            self.tbl_catalog.setItem(i, 0, _make_item(t["test_name"]))
+            self.tbl_catalog.setItem(i, 1, _make_item(t["department"]))
+            self.tbl_catalog.setItem(i, 2, _make_item(t["unit"] or "-"))
+            self.tbl_catalog.setItem(i, 3, _make_item(str(t["low_val"]) if t["low_val"] is not None else "-"))
+            self.tbl_catalog.setItem(i, 4, _make_item(str(t["high_val"]) if t["high_val"] is not None else "-"))
             crit = f"<{t['crit_low']} or >{t['crit_high']}" if (t["crit_low"] is not None or t["crit_high"] is not None) else "-"
-            self.tbl_catalog.setItem(i, 5, QTableWidgetItem(crit))
-            self.tbl_catalog.setItem(i, 6, QTableWidgetItem(t["tube_type"] or "-"))
+            self.tbl_catalog.setItem(i, 5, _make_item(crit))
+            self.tbl_catalog.setItem(i, 6, _make_item(t["tube_type"] or "-"))
+        self.tbl_catalog.resizeRowsToContents()
 
     def refresh_pathologist_queue(self):
         conn = get_conn()
@@ -3226,20 +3497,20 @@ class MainWorkspace(QWidget):
 
         unsigned_cnt = sum(1 for r in rows if not r["pathologist_signed_by"])
         tab_label = f"Pathologist Review ({unsigned_cnt})" if unsigned_cnt > 0 else "Pathologist Review"
-        self.tabs.setTabText(2, tab_label)
+        self.tabs.setTabText(3, tab_label)
 
         self.tbl_path.setRowCount(len(rows))
         for i, r in enumerate(rows):
-            self.tbl_path.setItem(i, 0, QTableWidgetItem(str(r["id"])))
-            self.tbl_path.setItem(i, 1, QTableWidgetItem(r["specimen_id"]))
-            self.tbl_path.setItem(i, 2, QTableWidgetItem(r["full_name"]))
-            self.tbl_path.setItem(i, 3, QTableWidgetItem(r["test_name"]))
-            self.tbl_path.setItem(i, 4, QTableWidgetItem(r["result_value"] or "Pending"))
-            self.tbl_path.setItem(i, 5, QTableWidgetItem(r["flag"] or r["status"]))
+            self.tbl_path.setItem(i, 0, _make_item(str(r["id"])))
+            self.tbl_path.setItem(i, 1, _make_item(r["specimen_id"]))
+            self.tbl_path.setItem(i, 2, _make_item(r["full_name"]))
+            self.tbl_path.setItem(i, 3, _make_item(r["test_name"]))
+            self.tbl_path.setItem(i, 4, _make_item(r["result_value"] or "Pending"))
+            self.tbl_path.setItem(i, 5, _make_item(r["flag"] or r["status"]))
             cs = f"Signed ({r['pathologist_signed_at']})" if r["pathologist_signed_by"] else "Awaiting MD Co-Sign"
-            item_cs = QTableWidgetItem(cs)
-            item_cs.setForeground(QColor("#34D399") if r["pathologist_signed_by"] else QColor("#FBBF24"))
-            self.tbl_path.setItem(i, 6, item_cs)
+            cs_col = "#34D399" if r["pathologist_signed_by"] else "#FBBF24"
+            self.tbl_path.setItem(i, 6, _make_item(cs, cs_col))
+        self.tbl_path.resizeRowsToContents()
 
     def refresh_qc_targets(self):
         conn = get_conn()
@@ -3260,15 +3531,20 @@ class MainWorkspace(QWidget):
         rows = conn.execute("SELECT * FROM patients ORDER BY full_name ASC").fetchall()
         conn.close()
 
-        filtered = [r for r in rows if not q or q in r["full_name"].lower() or q in r["mrn"].lower()]
+        filtered = [
+            r for r in rows
+            if not q or q in r["full_name"].lower() or q in r["mrn"].lower() or q in (r["physician"] or "").lower()
+        ]
         self.tbl_patients.setRowCount(len(filtered))
         for i, r in enumerate(filtered):
-            self.tbl_patients.setItem(i, 0, QTableWidgetItem(str(r["id"])))
-            self.tbl_patients.setItem(i, 1, QTableWidgetItem(r["mrn"]))
-            self.tbl_patients.setItem(i, 2, QTableWidgetItem(r["full_name"]))
-            self.tbl_patients.setItem(i, 3, QTableWidgetItem(r["dob"] or "-"))
-            self.tbl_patients.setItem(i, 4, QTableWidgetItem(r["sex"] or "-"))
-            self.tbl_patients.setItem(i, 5, QTableWidgetItem(r["physician"] or "-"))
+            self.tbl_patients.setItem(i, 0, _make_item(str(r["id"])))
+            self.tbl_patients.setItem(i, 1, _make_item(r["mrn"]))
+            self.tbl_patients.setItem(i, 2, _make_item(r["full_name"]))
+            self.tbl_patients.setItem(i, 3, _make_item(r["dob"] or "-"))
+            self.tbl_patients.setItem(i, 4, _make_item(r["sex"] or "-"))
+            self.tbl_patients.setItem(i, 5, _make_item(r["contact"] or "-"))
+            self.tbl_patients.setItem(i, 6, _make_item(r["physician"] or "-"))
+        self.tbl_patients.resizeRowsToContents()
 
     def refresh_system(self):
         conn = get_conn()
@@ -3278,17 +3554,18 @@ class MainWorkspace(QWidget):
 
         self.tbl_staff.setRowCount(len(staff))
         for i, s in enumerate(staff):
-            self.tbl_staff.setItem(i, 0, QTableWidgetItem(s["pin"]))
-            self.tbl_staff.setItem(i, 1, QTableWidgetItem(s["name"]))
-            self.tbl_staff.setItem(i, 2, QTableWidgetItem(s["role"]))
+            self.tbl_staff.setItem(i, 0, _make_item(s["pin"]))
+            self.tbl_staff.setItem(i, 1, _make_item(s["name"]))
+            self.tbl_staff.setItem(i, 2, _make_item(s["role"]))
 
         self.tbl_audit.setRowCount(len(audits))
         for i, a in enumerate(audits):
-            self.tbl_audit.setItem(i, 0, QTableWidgetItem(a["timestamp"]))
-            self.tbl_audit.setItem(i, 1, QTableWidgetItem(a["operator"]))
-            self.tbl_audit.setItem(i, 2, QTableWidgetItem(a["action"]))
-            self.tbl_audit.setItem(i, 3, QTableWidgetItem(a["specimen_id"] or "-"))
-            self.tbl_audit.setItem(i, 4, QTableWidgetItem(a["details"] or ""))
+            self.tbl_audit.setItem(i, 0, _make_item(a["timestamp"]))
+            self.tbl_audit.setItem(i, 1, _make_item(a["operator"]))
+            self.tbl_audit.setItem(i, 2, _make_item(a["action"]))
+            self.tbl_audit.setItem(i, 3, _make_item(a["specimen_id"] or "-"))
+            self.tbl_audit.setItem(i, 4, _make_item(a["details"] or ""))
+        self.tbl_audit.resizeRowsToContents()
 
 
 # ==============================================================================
