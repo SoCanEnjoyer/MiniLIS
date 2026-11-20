@@ -16,19 +16,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller PySide6 matplotlib fpdf2
 
+      - name: Verify Python Syntax
+        run: python -m py_compile lis_app.py
+
       - name: Build Standalone Windows Executable
-        run: |
-          pyinstaller --onefile --windowed ^
-            --hidden-import=PySide6.QtSvg ^
-            --hidden-import=matplotlib.backends.backend_qtagg ^
-            --exclude-module PySide6.QtWebEngineCore ^
-            --exclude-module PySide6.QtWebEngineWidgets ^
-            --exclude-module PySide6.Qt3DCore ^
-            --exclude-module PySide6.Qt3DRender ^
-            --exclude-module PySide6.QtQuick ^
-            --exclude-module PySide6.QtQml ^
-            --exclude-module tkinter ^
-            --name="Monocytes_Delegates_LIS_v7_TITAN" lis_app.py
+        shell: cmd
+        run: pyinstaller --onefile --windowed --hidden-import=PySide6.QtSvg --hidden-import=matplotlib.backends.backend_qtagg --exclude-module PySide6.QtWebEngineCore --exclude-module PySide6.QtWebEngineWidgets --exclude-module PySide6.Qt3DCore --exclude-module PySide6.Qt3DRender --exclude-module PySide6.QtQuick --exclude-module PySide6.QtQml --name="Monocytes_Delegates_LIS_v7_TITAN" lis_app.py
 
       - uses: actions/upload-artifact@v4
         with:
