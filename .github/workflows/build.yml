@@ -1,16 +1,36 @@
 name: Build Windows EXE
 on: [workflow_dispatch]
+
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install pyinstaller customtkinter fpdf2
-      - run: pyinstaller --onefile --windowed --collect-all customtkinter --name="Monocytes_Delegates_LIS_v6_APEX" lis_app.py
+
+      - name: Install Qt6 & Clinical Engine Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller PySide6 matplotlib fpdf2
+
+      - name: Build Standalone Windows Executable
+        run: |
+          pyinstaller --onefile --windowed ^
+            --hidden-import=PySide6.QtSvg ^
+            --hidden-import=matplotlib.backends.backend_qtagg ^
+            --exclude-module PySide6.QtWebEngineCore ^
+            --exclude-module PySide6.QtWebEngineWidgets ^
+            --exclude-module PySide6.Qt3DCore ^
+            --exclude-module PySide6.Qt3DRender ^
+            --exclude-module PySide6.QtQuick ^
+            --exclude-module PySide6.QtQml ^
+            --exclude-module tkinter ^
+            --name="Monocytes_Delegates_LIS_v7_TITAN" lis_app.py
+
       - uses: actions/upload-artifact@v4
         with:
-          name: Monocytes-Delegates-LIS-v6-APEX-Windows
-          path: dist/Monocytes_Delegates_LIS_v6_APEX.exe
+          name: Monocytes-Delegates-LIS-v7-TITAN-Windows
+          path: dist/Monocytes_Delegates_LIS_v7_TITAN.exe
