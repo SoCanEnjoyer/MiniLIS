@@ -1,12 +1,13 @@
 import sys
 import os
+import re
 import csv
 import json
 import random
 import shutil
 import sqlite3
 import hashlib
-from datetime import datetime
+from datetime import datetime, date
 
 if sys.platform == "win32":
     import ctypes
@@ -35,23 +36,49 @@ from PySide6.QtWidgets import (
 from fpdf import FPDF
 
 APP_TITLE = "Monocytes Delegates LIS"
-DB_NAME = "monocytes_delegates_lis_v4.db"
+DEFAULT_DB_NAME = "monocytes_delegates_lis_v4.db"
+CONFIG_FILE = "lis_config.json"
 ADMIN_MODE_PIN = "0000"
 
+CURRENT_THEME = "dark"
+
+
+def load_config() -> dict:
+    cfg = {"db_path": DEFAULT_DB_NAME, "theme": "dark"}
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                cfg.update(json.load(f))
+        except Exception:
+            pass
+    return cfg
+
+
+def save_config(cfg: dict):
+    try:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2)
+    except Exception:
+        pass
+
+
+APP_CONFIG = load_config()
+CURRENT_THEME = APP_CONFIG.get("theme", "dark")
+
 INITIAL_STAFF = [
-    ("0001", "Carlyle Dioleste, RMT", "Medical Technologist (RMT)"),
-    ("0002", "Ariech Legaspi, RMT", "Medical Technologist (RMT)"),
-    ("0003", "Melody Bajande, RMT", "Medical Technologist (RMT)"),
-    ("0004", "Christine Patani-e, RMT", "Medical Technologist (RMT)"),
-    ("0005", "Chauncy Melvida, RMT", "Medical Technologist (RMT)"),
-    ("0006", "Elaijeen Cordova, RMT", "Medical Technologist (RMT)"),
-    ("0007", "Dianne Pastor, RMT", "Medical Technologist (RMT)"),
-    ("0008", "Michael Malabago, RMT", "Medical Technologist (RMT)"),
-    ("0009", "Nielmarc Pontioso, RMT", "Medical Technologist (RMT)"),
-    ("0010", "Princess Aguilo, RMT", "Medical Technologist (RMT)"),
-    ("0011", "Keturah Totisano, RMT", "Medical Technologist (RMT)"),
-    ("0012", "Arthur Mana-ay, RMT", "Medical Technologist (RMT)"),
-    ("1111", "Gaia Aubrey Manalo, MD", "Pathologist"),
+    ("0001", "Carlyle Dioleste, RMT", "Medical Technologist (RMT)", "PRC-0098412", ""),
+    ("0002", "Ariech Legaspi, RMT", "Medical Technologist (RMT)", "PRC-0098413", ""),
+    ("0003", "Melody Bajande, RMT", "Medical Technologist (RMT)", "PRC-0098414", ""),
+    ("0004", "Christine Patani-e, RMT", "Medical Technologist (RMT)", "PRC-0098415", ""),
+    ("0005", "Chauncy Melvida, RMT", "Medical Technologist (RMT)", "PRC-0098416", ""),
+    ("0006", "Elaijeen Cordova, RMT", "Medical Technologist (RMT)", "PRC-0098417", ""),
+    ("0007", "Dianne Pastor, RMT", "Medical Technologist (RMT)", "PRC-0098418", ""),
+    ("0008", "Michael Malabago, RMT", "Medical Technologist (RMT)", "PRC-0098419", ""),
+    ("0009", "Nielmarc Pontioso, RMT", "Medical Technologist (RMT)", "PRC-0098420", ""),
+    ("0010", "Princess Aguilo, RMT", "Medical Technologist (RMT)", "PRC-0098421", ""),
+    ("0011", "Keturah Totisano, RMT", "Medical Technologist (RMT)", "PRC-0098422", ""),
+    ("0012", "Arthur Mana-ay, RMT", "Medical Technologist (RMT)", "PRC-0098423", ""),
+    ("1111", "Gaia Aubrey Manalo, MD", "Pathologist", "PRC-0142890", ""),
 ]
 
 # (test_name, department, unit, low_val, high_val, crit_low, crit_high, delta_pct, tube_type, ref_range)
@@ -60,6 +87,9 @@ DEFAULT_TESTS = [
     ("Red Blood Cell Count (RBC)", "Hematology", "x10^12/L", 4.2, 5.9, 2.5, 7.5, 20.0, "Lavender (EDTA)", "4.2 - 5.9"),
     ("Hemoglobin (Hgb)", "Hematology", "g/dL", 12.0, 17.5, 7.0, 20.0, 20.0, "Lavender (EDTA)", "12.0 - 17.5"),
     ("Hematocrit (Hct)", "Hematology", "%", 36.0, 50.0, 21.0, 60.0, 20.0, "Lavender (EDTA)", "36.0 - 50.0"),
+    ("MCV", "Hematology", "fL", 80.0, 100.0, 60.0, 120.0, 15.0, "Lavender (EDTA)", "80.0 - 100.0"),
+    ("MCH", "Hematology", "pg", 27.0, 33.0, 18.0, 42.0, 15.0, "Lavender (EDTA)", "27.0 - 33.0"),
+    ("MCHC", "Hematology", "g/dL", 32.0, 36.0, 26.0, 40.0, 15.0, "Lavender (EDTA)", "32.0 - 36.0"),
     ("Platelet Count (PLT)", "Hematology", "x10^9/L", 150.0, 450.0, 40.0, 1000.0, 30.0, "Lavender (EDTA)", "150 - 450"),
     ("Peripheral Blood Smear (PBS)", "Hematology", "Morphology", None, None, None, None, 0.0, "Lavender (EDTA)", "Normocytic Normochromic"),
     ("Prothrombin Time (PT)", "Coagulation", "sec", 11.0, 13.5, None, 30.0, 25.0, "Light Blue (Citrate)", "11.0 - 13.5"),
@@ -77,17 +107,34 @@ DEFAULT_TESTS = [
     ("Total Cholesterol", "Clinical Chemistry", "mg/dL", 0.0, 200.0, None, 400.0, 25.0, "Gold (SST)", "< 200"),
     ("Triglycerides", "Clinical Chemistry", "mg/dL", 0.0, 150.0, None, 500.0, 30.0, "Gold (SST)", "< 150"),
     ("HDL Cholesterol", "Clinical Chemistry", "mg/dL", 40.0, 90.0, None, None, 25.0, "Gold (SST)", "> 40"),
+    ("LDL Cholesterol (Calc)", "Clinical Chemistry", "mg/dL", 0.0, 100.0, None, 250.0, 30.0, "Gold (SST)", "< 100"),
     ("Troponin I (hs-cTnI)", "Immunology", "ng/mL", 0.0, 0.04, None, 0.40, 50.0, "Gold (SST)", "< 0.04"),
     ("Dengue NS1 Antigen", "Serology", "Qualitative", None, None, None, None, 0.0, "Gold (SST)", "Non-Reactive"),
     ("Urinalysis (Complete)", "Clinical Microscopy", "Profile", None, None, None, None, 0.0, "Sterile Urine Cup", "Yellow / Clear / Neg"),
+    ("Fecalysis (Routine)", "Clinical Microscopy", "Profile", None, None, None, None, 0.0, "Sterile Container", "Brown / Formed / NOPS"),
     ("Culture & Sensitivity (C&S)", "Microbiology", "Antibiogram", None, None, None, None, 0.0, "Sterile Container", "No Growth"),
 ]
 
+# Age/Sex-specific clinical intervals: (test_name, sex, min_age_years, max_age_years, low_val, high_val, crit_low, crit_high, ref_label)
+DEFAULT_DEMOGRAPHIC_RANGES = [
+    ("Hemoglobin (Hgb)", "Male", 15.0, 150.0, 13.5, 17.5, 7.0, 20.0, "13.5 - 17.5 (Adult M)"),
+    ("Hemoglobin (Hgb)", "Female", 15.0, 150.0, 12.0, 15.5, 7.0, 20.0, "12.0 - 15.5 (Adult F)"),
+    ("Hemoglobin (Hgb)", "All", 0.0, 14.99, 11.0, 14.5, 7.0, 19.0, "11.0 - 14.5 (Peds)"),
+    ("Hematocrit (Hct)", "Male", 15.0, 150.0, 41.0, 50.0, 21.0, 60.0, "41.0 - 50.0 (Adult M)"),
+    ("Hematocrit (Hct)", "Female", 15.0, 150.0, 36.0, 44.0, 21.0, 60.0, "36.0 - 44.0 (Adult F)"),
+    ("Red Blood Cell Count (RBC)", "Male", 15.0, 150.0, 4.5, 5.9, 2.5, 7.5, "4.5 - 5.9 (Adult M)"),
+    ("Red Blood Cell Count (RBC)", "Female", 15.0, 150.0, 4.1, 5.1, 2.5, 7.5, "4.1 - 5.1 (Adult F)"),
+    ("Creatinine", "Male", 15.0, 150.0, 0.7, 1.3, None, 5.0, "0.7 - 1.3 (Adult M)"),
+    ("Creatinine", "Female", 15.0, 150.0, 0.6, 1.1, None, 5.0, "0.6 - 1.1 (Adult F)"),
+    ("Creatinine", "All", 0.0, 14.99, 0.3, 0.7, None, 3.5, "0.3 - 0.7 (Peds)"),
+    ("White Blood Cell Count (WBC)", "All", 0.0, 14.99, 5.0, 14.5, 2.0, 35.0, "5.0 - 14.5 (Peds)"),
+]
+
 PRESET_PANELS = {
-    "Full CBC + PBS": [
+    "Full CBC + Indices": [
         "White Blood Cell Count (WBC)", "Red Blood Cell Count (RBC)",
-        "Hemoglobin (Hgb)", "Hematocrit (Hct)", "Platelet Count (PLT)",
-        "Peripheral Blood Smear (PBS)"
+        "Hemoglobin (Hgb)", "Hematocrit (Hct)", "MCV", "MCH", "MCHC",
+        "Platelet Count (PLT)"
     ],
     "Basic Metabolic (BMP)": [
         "Fasting Blood Glucose (FBS)", "Blood Urea Nitrogen (BUN)",
@@ -97,14 +144,13 @@ PRESET_PANELS = {
         "ALT (SGPT)", "AST (SGOT)", "Albumin"
     ],
     "Lipid Profile": [
-        "Total Cholesterol", "Triglycerides", "HDL Cholesterol"
+        "Total Cholesterol", "Triglycerides", "HDL Cholesterol", "LDL Cholesterol (Calc)"
     ],
     "Coagulation Panel": [
         "Prothrombin Time (PT)", "INR", "Activated Partial Thromboplastin Time (aPTT)"
     ],
-    "Dengue Workup": [
-        "White Blood Cell Count (WBC)", "Hemoglobin (Hgb)",
-        "Hematocrit (Hct)", "Platelet Count (PLT)", "Dengue NS1 Antigen"
+    "Clinical Microscopy": [
+        "Urinalysis (Complete)", "Fecalysis (Routine)"
     ],
 }
 
@@ -127,30 +173,15 @@ PBS_MACROS = [
 ]
 
 ANTIBIOTICS_LIST = [
-    "Amoxicillin-Clavulanate",
-    "Ceftriaxone",
-    "Cefuroxime",
-    "Ciprofloxacin",
-    "Levofloxacin",
-    "Gentamicin",
-    "Amikacin",
-    "Meropenem",
-    "Piperacillin-Tazobactam",
-    "Trimethoprim-Sulfamethoxazole",
-    "Nitrofurantoin",
-    "Vancomycin",
+    "Amoxicillin-Clavulanate", "Ceftriaxone", "Cefuroxime", "Ciprofloxacin",
+    "Levofloxacin", "Gentamicin", "Amikacin", "Meropenem",
+    "Piperacillin-Tazobactam", "Trimethoprim-Sulfamethoxazole", "Nitrofurantoin", "Vancomycin",
 ]
 
 ORGANISMS_LIST = [
-    "Escherichia coli",
-    "Klebsiella pneumoniae",
-    "Staphylococcus aureus (MSSA)",
-    "Staphylococcus aureus (MRSA)",
-    "Pseudomonas aeruginosa",
-    "Enterococcus faecalis",
-    "Proteus mirabilis",
-    "Salmonella enterica",
-    "No Pathogen Isolated / Normal Flora",
+    "Escherichia coli", "Klebsiella pneumoniae", "Staphylococcus aureus (MSSA)",
+    "Staphylococcus aureus (MRSA)", "Pseudomonas aeruginosa", "Enterococcus faecalis",
+    "Proteus mirabilis", "Salmonella enterica", "No Pathogen Isolated / Normal Flora",
 ]
 
 TUBE_COLORS = {
@@ -162,288 +193,332 @@ TUBE_COLORS = {
     "Sterile Container": ("#F43F5E", "#FFE4E6"),
 }
 
-APP_QSS = """
-QMainWindow, QWidget#RootCanvas, QDialog, QMessageBox {
-    background-color: #080C15;
-    color: #E2E8F0;
+THEMES = {
+    "dark": {
+        "bg": "#080C15",
+        "surface": "#0E1424",
+        "subpanel": "#121A2E",
+        "topbar": "#0B101D",
+        "input_bg": "#090E1A",
+        "input_focus": "#0C1424",
+        "border": "#1E293B",
+        "border_strong": "#334155",
+        "text": "#E2E8F0",
+        "text_bright": "#F8FAFC",
+        "muted": "#94A3B8",
+        "btn_bg": "#162033",
+        "btn_hover": "#1E2B44",
+        "tab_bg": "#0B101D",
+        "tab_sel": "#121B2E",
+        "table_alt": "#0C1322",
+        "group_row": "#10192D",
+        "accent": "#38BDF8",
+        "primary": "#0284C7",
+        "success": "#059669",
+        "danger": "#BE123C",
+        "chart_fig": "#090E1A",
+        "chart_ax": "#0E1424",
+        "chart_grid": "#1E293B",
+    },
+    "light": {
+        "bg": "#F1F5F9",
+        "surface": "#FFFFFF",
+        "subpanel": "#F8FAFC",
+        "topbar": "#FFFFFF",
+        "input_bg": "#FFFFFF",
+        "input_focus": "#F0F9FF",
+        "border": "#CBD5E1",
+        "border_strong": "#94A3B8",
+        "text": "#1E293B",
+        "text_bright": "#0F172A",
+        "muted": "#475569",
+        "btn_bg": "#E2E8F0",
+        "btn_hover": "#CBD5E1",
+        "tab_bg": "#E2E8F0",
+        "tab_sel": "#FFFFFF",
+        "table_alt": "#F8FAFC",
+        "group_row": "#E0F2FE",
+        "accent": "#0284C7",
+        "primary": "#0284C7",
+        "success": "#059669",
+        "danger": "#E11D48",
+        "chart_fig": "#FFFFFF",
+        "chart_ax": "#F8FAFC",
+        "chart_grid": "#CBD5E1",
+    }
+}
+
+
+def build_qss(theme_name: str = "dark") -> str:
+    t = THEMES.get(theme_name, THEMES["dark"])
+    return f"""
+QMainWindow, QWidget#RootCanvas, QDialog, QMessageBox {{
+    background-color: {t['bg']};
+    color: {t['text']};
     font-family: "Segoe UI", "Inter", sans-serif;
     font-size: 10pt;
-}
-QWidget {
-    color: #E2E8F0;
+}}
+QWidget {{
+    color: {t['text']};
     font-family: "Segoe UI", "Inter", sans-serif;
-}
-QMessageBox {
-    background-color: #0E1424;
-    border: 1px solid #334155;
-}
-QMessageBox QLabel {
-    color: #F8FAFC;
+}}
+QMessageBox {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+}}
+QMessageBox QLabel {{
+    color: {t['text_bright']};
     background-color: transparent;
     font-size: 10pt;
     padding: 4px;
-}
-QMessageBox QPushButton {
+}}
+QMessageBox QPushButton {{
     min-width: 86px;
     padding: 7px 14px;
-}
-QFrame#SurfaceCard {
-    background-color: #0E1424;
-    border: 1px solid #1E293B;
+}}
+QFrame#SurfaceCard {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border']};
     border-radius: 10px;
-}
-QFrame#SubPanel {
-    background-color: #121A2E;
-    border: 1px solid #1E293B;
+}}
+QFrame#SubPanel {{
+    background-color: {t['subpanel']};
+    border: 1px solid {t['border']};
     border-radius: 8px;
-}
-QFrame#TopHeaderBar {
-    background-color: #0B101D;
-    border-bottom: 1px solid #1E293B;
-}
-QScrollArea {
+}}
+QFrame#TopHeaderBar {{
+    background-color: {t['topbar']};
+    border-bottom: 1px solid {t['border']};
+}}
+QScrollArea {{
     background-color: transparent;
     border: none;
-}
-QScrollArea#DarkScroll {
-    background-color: #090E1A;
-    border: 1px solid #1E293B;
+}}
+QScrollArea#DarkScroll {{
+    background-color: {t['input_bg']};
+    border: 1px solid {t['border']};
     border-radius: 8px;
-}
-QWidget#ScrollContent {
-    background-color: #090E1A;
-}
-QWidget#CardScrollContent {
-    background-color: #0E1424;
-}
-QLabel#SectionHeader {
+}}
+QWidget#ScrollContent {{
+    background-color: {t['input_bg']};
+}}
+QWidget#CardScrollContent {{
+    background-color: {t['surface']};
+}}
+QLabel#SectionHeader {{
     font-size: 11pt;
     font-weight: 700;
-    color: #F8FAFC;
-}
-QLabel#GroupTitle {
+    color: {t['text_bright']};
+}}
+QLabel#GroupTitle {{
     font-size: 8.5pt;
     font-weight: 700;
-    color: #94A3B8;
+    color: {t['muted']};
     letter-spacing: 0.6px;
     padding-top: 4px;
-}
-QLabel#FieldLabel {
-    color: #CBD5E1;
+}}
+QLabel#FieldLabel {{
+    color: {t['text']};
     font-size: 9pt;
     font-weight: 600;
-}
-QLabel#MutedLabel {
-    color: #94A3B8;
+}}
+QLabel#MutedLabel {{
+    color: {t['muted']};
     font-size: 9pt;
-}
-QLabel#MonoBadge {
+}}
+QLabel#MonoBadge {{
     font-family: "Consolas", "JetBrains Mono", monospace;
-    background-color: #111827;
-    border: 1px solid #1E293B;
+    background-color: {t['subpanel']};
+    border: 1px solid {t['border']};
     border-radius: 6px;
     padding: 4px 10px;
-    color: #CBD5E1;
+    color: {t['text']};
     font-weight: 600;
-}
-QLineEdit, QComboBox, QTextEdit, QPlainTextEdit {
-    background-color: #090E1A;
-    border: 1px solid #263348;
+}}
+QLineEdit, QComboBox, QTextEdit, QPlainTextEdit {{
+    background-color: {t['input_bg']};
+    border: 1px solid {t['border_strong']};
     border-radius: 7px;
     padding: 7px 10px;
-    color: #F8FAFC;
+    color: {t['text_bright']};
     selection-background-color: #2563EB;
-}
-QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QPlainTextEdit:focus {
-    border: 1px solid #38BDF8;
-    background-color: #0C1424;
-}
-QComboBox::drop-down {
+    selection-color: #FFFFFF;
+}}
+QLineEdit:focus, QComboBox:focus, QTextEdit:focus, QPlainTextEdit:focus {{
+    border: 1px solid {t['accent']};
+    background-color: {t['input_focus']};
+}}
+QComboBox::drop-down {{
     border: none;
     width: 24px;
-}
-QComboBox QAbstractItemView {
-    background-color: #0F172A;
-    border: 1px solid #334155;
-    color: #F8FAFC;
+}}
+QComboBox QAbstractItemView {{
+    background-color: {t['surface']};
+    border: 1px solid {t['border_strong']};
+    color: {t['text_bright']};
     selection-background-color: #1D4ED8;
-}
-QPushButton {
-    background-color: #162033;
-    border: 1px solid #29374F;
+    selection-color: #FFFFFF;
+}}
+QPushButton {{
+    background-color: {t['btn_bg']};
+    border: 1px solid {t['border_strong']};
     border-radius: 7px;
     padding: 7px 13px;
-    color: #E2E8F0;
+    color: {t['text_bright']};
     font-weight: 600;
-}
-QPushButton:hover {
-    background-color: #1E2B44;
-    border-color: #475569;
-    color: #FFFFFF;
-}
-QPushButton:pressed {
-    background-color: #0F172A;
-}
-QPushButton#PrimaryBtn {
-    background-color: #0284C7;
+}}
+QPushButton:hover {{
+    background-color: {t['btn_hover']};
+    border-color: {t['accent']};
+}}
+QPushButton:pressed {{
+    background-color: {t['subpanel']};
+}}
+QPushButton#PrimaryBtn {{
+    background-color: {t['primary']};
     border: 1px solid #38BDF8;
     color: #FFFFFF;
-}
-QPushButton#PrimaryBtn:hover {
+}}
+QPushButton#PrimaryBtn:hover {{
     background-color: #0369A1;
-}
-QPushButton#SuccessBtn {
-    background-color: #059669;
+}}
+QPushButton#SuccessBtn {{
+    background-color: {t['success']};
     border: 1px solid #34D399;
     color: #FFFFFF;
-}
-QPushButton#SuccessBtn:hover {
+}}
+QPushButton#SuccessBtn:hover {{
     background-color: #047857;
-}
-QPushButton#DangerBtn {
-    background-color: #BE123C;
+}}
+QPushButton#DangerBtn {{
+    background-color: {t['danger']};
     border: 1px solid #FB7185;
     color: #FFFFFF;
-}
-QPushButton#DangerBtn:hover {
+}}
+QPushButton#DangerBtn:hover {{
     background-color: #9F1239;
-}
-QPushButton#AdminActiveBtn {
+}}
+QPushButton#AdminActiveBtn {{
     background-color: #1E3A8A;
     border: 1px solid #60A5FA;
     color: #DBEAFE;
-}
-QPushButton#AdminActiveBtn:hover {
+}}
+QPushButton#AdminActiveBtn:hover {{
     background-color: #1D4ED8;
-}
-QPushButton#KeypadBtn {
-    background-color: #111827;
-    border: 1px solid #263348;
+}}
+QPushButton#KeypadBtn {{
+    background-color: {t['subpanel']};
+    border: 1px solid {t['border_strong']};
     border-radius: 8px;
     font-family: "Consolas", monospace;
     font-size: 13pt;
     font-weight: 700;
-    color: #F8FAFC;
+    color: {t['text_bright']};
     min-height: 44px;
-}
-QPushButton#KeypadBtn:hover {
-    background-color: #1E293B;
-    border-color: #38BDF8;
-    color: #38BDF8;
-}
-QPushButton#KeypadBtn:pressed {
-    background-color: #0284C7;
-    color: #FFFFFF;
-}
-QTabWidget::pane {
-    border: 1px solid #1E293B;
+}}
+QPushButton#KeypadBtn:hover {{
+    background-color: {t['btn_hover']};
+    border-color: {t['accent']};
+    color: {t['accent']};
+}}
+QTabWidget::pane {{
+    border: 1px solid {t['border']};
     border-radius: 9px;
-    background-color: #080C15;
+    background-color: {t['bg']};
     top: -1px;
-}
-QTabBar::tab {
-    background-color: #0B101D;
-    border: 1px solid #1E293B;
+}}
+QTabBar::tab {{
+    background-color: {t['tab_bg']};
+    border: 1px solid {t['border']};
     border-bottom: none;
     border-top-left-radius: 7px;
     border-top-right-radius: 7px;
-    padding: 9px 18px;
+    padding: 9px 16px;
     margin-right: 4px;
-    color: #94A3B8;
+    color: {t['muted']};
     font-weight: 600;
     font-size: 9.5pt;
-}
-QTabBar::tab:selected {
-    background-color: #121B2E;
-    border-color: #334155;
-    border-top: 2px solid #38BDF8;
-    color: #F8FAFC;
-}
-QTabBar::tab:hover:!selected {
-    background-color: #0F172A;
-    color: #E2E8F0;
-}
-QTableWidget, QTreeWidget {
-    background-color: #090E1A;
-    alternate-background-color: #0C1322;
-    gridline-color: #172033;
-    border: 1px solid #1E293B;
+}}
+QTabBar::tab:selected {{
+    background-color: {t['tab_sel']};
+    border-color: {t['border_strong']};
+    border-top: 2px solid {t['accent']};
+    color: {t['text_bright']};
+}}
+QTabBar::tab:hover:!selected {{
+    background-color: {t['surface']};
+    color: {t['text_bright']};
+}}
+QTableWidget, QTreeWidget {{
+    background-color: {t['input_bg']};
+    alternate-background-color: {t['table_alt']};
+    gridline-color: {t['border']};
+    border: 1px solid {t['border']};
     border-radius: 8px;
     selection-background-color: #1D4ED8;
     selection-color: #FFFFFF;
     outline: 0;
-}
-QTableWidget::item, QTreeWidget::item {
+}}
+QTableWidget::item, QTreeWidget::item {{
     padding: 6px 8px;
-    border-bottom: 1px solid #131C30;
-}
-QTreeWidget::item:selected {
+    border-bottom: 1px solid {t['border']};
+}}
+QTreeWidget::item:selected, QTableWidget::item:selected {{
     background-color: #1D4ED8;
     color: #FFFFFF;
-}
-QTreeWidget::item:hover:!selected {
-    background-color: #111A2E;
-}
-QHeaderView::section {
-    background-color: #0F172A;
-    color: #94A3B8;
+}}
+QHeaderView::section {{
+    background-color: {t['subpanel']};
+    color: {t['muted']};
     font-weight: 700;
     font-size: 9pt;
     border: none;
-    border-bottom: 1px solid #263348;
-    border-right: 1px solid #172033;
+    border-bottom: 1px solid {t['border_strong']};
+    border-right: 1px solid {t['border']};
     padding: 7px 8px;
-}
-QScrollBar:vertical {
-    background: #080C15;
+}}
+QScrollBar:vertical {{
+    background: {t['bg']};
     width: 10px;
-    margin: 0px;
-}
-QScrollBar::handle:vertical {
-    background: #263348;
+}}
+QScrollBar::handle:vertical {{
+    background: {t['border_strong']};
     border-radius: 5px;
     min-height: 24px;
-}
-QScrollBar::handle:vertical:hover {
-    background: #38BDF8;
-}
-QScrollBar:horizontal {
-    background: #080C15;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {t['accent']};
+}}
+QScrollBar:horizontal {{
+    background: {t['bg']};
     height: 10px;
-    margin: 0px;
-}
-QScrollBar::handle:horizontal {
-    background: #263348;
+}}
+QScrollBar::handle:horizontal {{
+    background: {t['border_strong']};
     border-radius: 5px;
     min-width: 24px;
-}
-QScrollBar::handle:horizontal:hover {
-    background: #38BDF8;
-}
-QScrollBar::add-line, QScrollBar::sub-line {
+}}
+QScrollBar::add-line, QScrollBar::sub-line {{
     width: 0px;
     height: 0px;
-}
-QCheckBox {
+}}
+QCheckBox {{
     spacing: 10px;
-    color: #F1F5F9;
+    color: {t['text_bright']};
     background-color: transparent;
     font-size: 9.5pt;
-}
-QCheckBox::indicator {
+}}
+QCheckBox::indicator {{
     width: 17px;
     height: 17px;
     border-radius: 4px;
-    border: 1px solid #475569;
-    background: #0E1424;
-}
-QCheckBox::indicator:hover {
-    border-color: #38BDF8;
-}
-QCheckBox::indicator:checked {
-    background: #0284C7;
-    border-color: #38BDF8;
-}
+    border: 1px solid {t['border_strong']};
+    background: {t['input_bg']};
+}}
+QCheckBox::indicator:checked {{
+    background: {t['primary']};
+    border-color: {t['accent']};
+}}
 """
 
 
@@ -461,13 +536,13 @@ def _pdf_safe(text) -> str:
     return s.encode("latin-1", errors="replace").decode("latin-1")
 
 
-def apply_dark_titlebar(widget: QWidget):
+def apply_window_titlebar_theme(widget: QWidget):
     if sys.platform != "win32":
         return
     try:
         hwnd = int(widget.winId())
         DWMWA_USE_IMMERSIVE_DARK_MODE = 20
-        val = ctypes.c_int(1)
+        val = ctypes.c_int(1 if CURRENT_THEME == "dark" else 0)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
             hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ctypes.byref(val), ctypes.sizeof(val)
         )
@@ -481,8 +556,8 @@ def _styled_msgbox(parent: QWidget, icon: QMessageBox.Icon, title: str, text: st
     box.setWindowTitle(title)
     box.setText(text)
     box.setStandardButtons(buttons)
-    box.setStyleSheet(APP_QSS)
-    apply_dark_titlebar(box)
+    box.setStyleSheet(build_qss(CURRENT_THEME))
+    apply_window_titlebar_theme(box)
     return box
 
 
@@ -503,9 +578,20 @@ def ask_confirm(parent: QWidget, title: str, text: str) -> bool:
     return res == QMessageBox.Yes
 
 
+def get_db_path() -> str:
+    return APP_CONFIG.get("db_path") or DEFAULT_DB_NAME
+
+
 def get_conn():
-    conn = sqlite3.connect(DB_NAME)
+    db_file = get_db_path()
+    conn = sqlite3.connect(db_file, timeout=15.0)
     conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=10000;")
+    except Exception:
+        pass
     return conn
 
 
@@ -524,7 +610,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS staff (
             pin TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            role TEXT NOT NULL
+            role TEXT NOT NULL,
+            prc_license TEXT,
+            sig_path TEXT
         )
     """)
 
@@ -558,6 +646,22 @@ def init_db():
     """)
 
     cur.execute("""
+        CREATE TABLE IF NOT EXISTS reference_ranges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            test_name TEXT NOT NULL,
+            sex TEXT NOT NULL,
+            min_age_years REAL NOT NULL,
+            max_age_years REAL NOT NULL,
+            low_val REAL,
+            high_val REAL,
+            crit_low REAL,
+            crit_high REAL,
+            ref_label TEXT,
+            UNIQUE(test_name, sex, min_age_years, max_age_years)
+        )
+    """)
+
+    cur.execute("""
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             specimen_id TEXT NOT NULL,
@@ -586,7 +690,8 @@ def init_db():
             pathologist_signed_by TEXT,
             pathologist_signed_at TEXT,
             antibiogram_json TEXT,
-            diff_json TEXT
+            diff_json TEXT,
+            microscopy_json TEXT
         )
     """)
 
@@ -624,43 +729,40 @@ def init_db():
         )
     """)
 
+    _ensure_column(cur, "staff", "prc_license", "TEXT")
+    _ensure_column(cur, "staff", "sig_path", "TEXT")
     _ensure_column(cur, "patients", "contact", "TEXT")
 
     order_upgrades = [
-        ("collected_at", "TEXT"),
-        ("verified_by", "TEXT"),
-        ("verified_at", "TEXT"),
-        ("amended_reason", "TEXT"),
-        ("panic_notified_to", "TEXT"),
-        ("delta_flag", "TEXT"),
-        ("critical_flag", "INTEGER DEFAULT 0"),
-        ("storage_slot", "TEXT"),
-        ("pathologist_note", "TEXT"),
-        ("pathologist_signed_by", "TEXT"),
-        ("pathologist_signed_at", "TEXT"),
-        ("antibiogram_json", "TEXT"),
-        ("diff_json", "TEXT"),
-        ("tube_type", "TEXT"),
-        ("ref_range", "TEXT"),
-        ("unit", "TEXT"),
+        ("collected_at", "TEXT"), ("verified_by", "TEXT"), ("verified_at", "TEXT"),
+        ("amended_reason", "TEXT"), ("panic_notified_to", "TEXT"), ("delta_flag", "TEXT"),
+        ("critical_flag", "INTEGER DEFAULT 0"), ("storage_slot", "TEXT"),
+        ("pathologist_note", "TEXT"), ("pathologist_signed_by", "TEXT"),
+        ("pathologist_signed_at", "TEXT"), ("antibiogram_json", "TEXT"),
+        ("diff_json", "TEXT"), ("microscopy_json", "TEXT"), ("tube_type", "TEXT"),
+        ("ref_range", "TEXT"), ("unit", "TEXT"),
     ]
     for col, col_def in order_upgrades:
         _ensure_column(cur, "orders", col, col_def)
 
     test_upgrades = [
-        ("crit_low", "REAL"),
-        ("crit_high", "REAL"),
-        ("delta_pct", "REAL DEFAULT 30.0"),
-        ("tube_type", "TEXT DEFAULT 'Gold (SST)'"),
-        ("ref_range", "TEXT"),
+        ("crit_low", "REAL"), ("crit_high", "REAL"), ("delta_pct", "REAL DEFAULT 30.0"),
+        ("tube_type", "TEXT DEFAULT 'Gold (SST)'"), ("ref_range", "TEXT"),
     ]
     for col, col_def in test_upgrades:
         _ensure_column(cur, "tests", col, col_def)
 
     cur.execute("DELETE FROM staff WHERE pin IN ('1234', '9999') OR name LIKE '%Demo%'")
 
-    for pin, name, role in INITIAL_STAFF:
-        cur.execute("INSERT OR IGNORE INTO staff (pin, name, role) VALUES (?, ?, ?)", (pin, name, role))
+    for pin, name, role, prc, sig in INITIAL_STAFF:
+        cur.execute(
+            "INSERT OR IGNORE INTO staff (pin, name, role, prc_license, sig_path) VALUES (?, ?, ?, ?, ?)",
+            (pin, name, role, prc, sig)
+        )
+        cur.execute(
+            "UPDATE staff SET prc_license = COALESCE(NULLIF(prc_license, ''), ?) WHERE pin = ?",
+            (prc, pin)
+        )
 
     for t in DEFAULT_TESTS:
         cur.execute("""
@@ -668,6 +770,13 @@ def init_db():
             (test_name, department, unit, low_val, high_val, crit_low, crit_high, delta_pct, tube_type, ref_range)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, t)
+
+    for dr in DEFAULT_DEMOGRAPHIC_RANGES:
+        cur.execute("""
+            INSERT OR IGNORE INTO reference_ranges
+            (test_name, sex, min_age_years, max_age_years, low_val, high_val, crit_low, crit_high, ref_label)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, dr)
 
     for q in DEFAULT_QC_TARGETS:
         cur.execute("""
@@ -677,6 +786,83 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def parse_age_years(dob_str: str) -> float:
+    """Parses YYYY-MM-DD DOB or age strings like '34y', '6m', '14d' into years."""
+    if not dob_str:
+        return 30.0
+    s = dob_str.strip().lower()
+    m_ymd = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
+    if m_ymd:
+        try:
+            b = date(int(m_ymd.group(1)), int(m_ymd.group(2)), int(m_ymd.group(3)))
+            days = (date.today() - b).days
+            return max(0.0, days / 365.25)
+        except Exception:
+            return 30.0
+    m_num = re.match(r"^(\d+(?:\.\d+)?)\s*([ymd]?)", s)
+    if m_num:
+        val = float(m_num.group(1))
+        unit = m_num.group(2)
+        if unit == "m":
+            return val / 12.0
+        if unit == "d":
+            return val / 365.25
+        return val
+    return 30.0
+
+
+def resolve_patient_interval(conn, test_name: str, sex: str, dob_str: str):
+    """Returns (low_val, high_val, crit_low, crit_high, ref_range, delta_pct) tailored to patient age/sex."""
+    base = conn.execute("SELECT * FROM tests WHERE test_name = ?", (test_name,)).fetchone()
+    if not base:
+        return (None, None, None, None, "-", 30.0)
+
+    age_y = parse_age_years(dob_str)
+    pt_sex = (sex or "All").strip()
+
+    rule = conn.execute("""
+        SELECT * FROM reference_ranges
+        WHERE test_name = ?
+          AND (sex = ? OR sex = 'All')
+          AND ? >= min_age_years AND ? <= max_age_years
+        ORDER BY CASE WHEN sex = ? THEN 0 ELSE 1 END, (max_age_years - min_age_years) ASC
+        LIMIT 1
+    """, (test_name, pt_sex, age_y, age_y, pt_sex)).fetchone()
+
+    if rule:
+        return (
+            rule["low_val"], rule["high_val"],
+            rule["crit_low"] if rule["crit_low"] is not None else base["crit_low"],
+            rule["crit_high"] if rule["crit_high"] is not None else base["crit_high"],
+            rule["ref_label"] or base["ref_range"],
+            base["delta_pct"] or 30.0
+        )
+
+    return (
+        base["low_val"], base["high_val"], base["crit_low"], base["crit_high"],
+        base["ref_range"] or "-", base["delta_pct"] or 30.0
+    )
+
+
+def perform_daily_backup():
+    db_file = get_db_path()
+    if not os.path.exists(db_file):
+        return
+    try:
+        os.makedirs("backups", exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d")
+        dest = os.path.join("backups", f"mdl_auto_backup_{stamp}.db")
+        shutil.copy2(db_file, dest)
+        files = sorted(
+            [os.path.join("backups", f) for f in os.listdir("backups") if f.endswith(".db")],
+            key=os.path.getmtime, reverse=True
+        )
+        for old in files[14:]:
+            os.remove(old)
+    except Exception:
+        pass
 
 
 def log_audit(operator: str, action: str, specimen_id: str = "-", details: str = ""):
@@ -741,7 +927,7 @@ class VectorRangeGauge(QWidget):
             "ABNORMAL": "#F43F5E",
             "REJECTED": "#64748B",
         }
-        self.flag_color = QColor(color_map.get(self.flag_text, "#38BDF8"))
+        self.flag_color = QColor(color_map.get(self.flag_text, "#0284C7"))
 
         target = 0.5
         try:
@@ -771,6 +957,7 @@ class VectorRangeGauge(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
         w = self.width()
+        is_dark = (CURRENT_THEME == "dark")
 
         p.setFont(QFont("Segoe UI", 9, QFont.Bold))
         p.setPen(self.flag_color)
@@ -781,20 +968,20 @@ class VectorRangeGauge(QWidget):
         bar_w, bar_h = max(40.0, w - 20.0), 12.0
 
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#1E293B"))
+        p.setBrush(QColor("#1E293B" if is_dark else "#CBD5E1"))
         p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w, bar_h), 6, 6)
 
-        p.setBrush(QColor(245, 158, 11, 130))
+        p.setBrush(QColor(245, 158, 11, 150))
         p.drawRoundedRect(QRectF(bar_x, bar_y, bar_w * 0.26, bar_h), 6, 6)
 
-        p.setBrush(QColor(244, 63, 94, 140))
+        p.setBrush(QColor(244, 63, 94, 155))
         p.drawRoundedRect(QRectF(bar_x + bar_w * 0.74, bar_y, bar_w * 0.26, bar_h), 6, 6)
 
-        p.setBrush(QColor(16, 185, 129, 200))
+        p.setBrush(QColor(16, 185, 129, 210))
         p.drawRect(QRectF(bar_x + bar_w * 0.25, bar_y, bar_w * 0.50, bar_h))
 
         p.setFont(QFont("Consolas", 8))
-        p.setPen(QColor("#94A3B8"))
+        p.setPen(QColor("#94A3B8" if is_dark else "#475569"))
         x_lo = bar_x + bar_w * 0.25
         x_hi = bar_x + bar_w * 0.75
         p.drawLine(QPointF(x_lo, bar_y - 3), QPointF(x_lo, bar_y + bar_h + 3))
@@ -828,21 +1015,22 @@ class TubeBadgeWidget(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
+        is_dark = (CURRENT_THEME == "dark")
         cap_hex, _ = TUBE_COLORS.get(self.tube_name, ("#38BDF8", "#E0F2FE"))
         cap_col = QColor(cap_hex)
 
         p.setPen(QPen(QColor("#64748B"), 1.2))
-        p.setBrush(QColor("#1E293B"))
+        p.setBrush(QColor("#1E293B" if is_dark else "#E2E8F0"))
         p.drawRoundedRect(QRectF(10, 8, 26, 12), 5, 5)
 
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(225, 29, 72, 180))
+        p.setBrush(QColor(225, 29, 72, 185))
         p.drawRoundedRect(QRectF(12, 10, 14, 8), 3, 3)
 
         p.setBrush(cap_col)
         p.drawRoundedRect(QRectF(2, 7, 9, 14), 2, 2)
 
-        p.setPen(QColor("#CBD5E1"))
+        p.setPen(QColor("#CBD5E1" if is_dark else "#1E293B"))
         p.setFont(QFont("Segoe UI", 9, QFont.DemiBold))
         avail_w = max(40, self.width() - 48)
         txt = p.fontMetrics().elidedText(f"Container: {self.tube_name}", Qt.ElideRight, avail_w)
@@ -850,23 +1038,26 @@ class TubeBadgeWidget(QWidget):
 
 
 class MplCanvas(FigureCanvas):
-    """Dark-theme Matplotlib canvas for QC Levey-Jennings and Patient Trends."""
+    """Theme-aware Matplotlib canvas for QC Levey-Jennings and Patient Trends."""
 
     def __init__(self, width=5.5, height=3.4, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor="#090E1A")
+        t = THEMES[CURRENT_THEME]
+        self.fig = Figure(figsize=(width, height), dpi=dpi, facecolor=t["chart_fig"])
         self.ax = self.fig.add_subplot(111)
         self._style_ax(self.ax)
         super().__init__(self.fig)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
     def _style_ax(self, ax):
-        ax.set_facecolor("#0E1424")
-        ax.tick_params(colors="#94A3B8", labelsize=8)
+        t = THEMES[CURRENT_THEME]
+        self.fig.set_facecolor(t["chart_fig"])
+        ax.set_facecolor(t["chart_ax"])
+        ax.tick_params(colors=t["muted"], labelsize=8)
         for spine in ax.spines.values():
-            spine.set_color("#263348")
-        ax.title.set_color("#F8FAFC")
-        ax.xaxis.label.set_color("#94A3B8")
-        ax.yaxis.label.set_color("#94A3B8")
+            spine.set_color(t["border_strong"])
+        ax.title.set_color(t["text_bright"])
+        ax.xaxis.label.set_color(t["muted"])
+        ax.yaxis.label.set_color(t["muted"])
 
 
 # ==============================================================================
@@ -874,14 +1065,14 @@ class MplCanvas(FigureCanvas):
 # ==============================================================================
 
 class AdminPinDialog(QDialog):
-    """Clean dark-themed PIN prompt for unlocking Admin Mode."""
+    """Theme-aware PIN prompt for unlocking Admin Mode."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Admin Mode Access")
         self.setFixedWidth(360)
-        self.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(self)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(22, 20, 22, 20)
@@ -891,7 +1082,7 @@ class AdminPinDialog(QDialog):
         title.setObjectName("SectionHeader")
         lay.addWidget(title)
 
-        desc = QLabel("Enter the 4-digit Admin PIN to access Reports, Staff Roster, and Audit Logs.")
+        desc = QLabel("Enter the 4-digit Admin PIN to access Reports, Staff Roster, Network Sync, and Audit Logs.")
         desc.setObjectName("MutedLabel")
         desc.setWordWrap(True)
         lay.addWidget(desc)
@@ -941,24 +1132,28 @@ class AdminPinDialog(QDialog):
 
 
 # ==============================================================================
-# CLEAN STAFF PIN LOGIN SCREEN
+# CLEAN STAFF PIN LOGIN SCREEN (LIGHT & DARK AWARE)
 # ==============================================================================
 
 class CleanLoginBackdrop(QWidget):
-    """Smooth, minimal dark slate gradient backdrop."""
-
     def paintEvent(self, event):
         p = QPainter(self)
         w, h = self.width(), self.height()
         grad = QLinearGradient(0, 0, w, h)
-        grad.setColorAt(0.0, QColor("#070B14"))
-        grad.setColorAt(0.5, QColor("#0B1120"))
-        grad.setColorAt(1.0, QColor("#060911"))
+        if CURRENT_THEME == "dark":
+            grad.setColorAt(0.0, QColor("#070B14"))
+            grad.setColorAt(0.5, QColor("#0B1120"))
+            grad.setColorAt(1.0, QColor("#060911"))
+        else:
+            grad.setColorAt(0.0, QColor("#E2E8F0"))
+            grad.setColorAt(0.5, QColor("#F1F5F9"))
+            grad.setColorAt(1.0, QColor("#E0F2FE"))
         p.fillRect(0, 0, w, h, grad)
 
 
 class StaffLoginScreen(QWidget):
     authenticated = Signal(dict)
+    theme_toggled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -971,6 +1166,18 @@ class StaffLoginScreen(QWidget):
         self.bg_canvas = CleanLoginBackdrop(self)
         root.addWidget(self.bg_canvas, 0, 0)
 
+        # Top-right theme toggle on login gate
+        top_overlay = QWidget(self)
+        top_overlay.setAttribute(Qt.WA_TranslucentBackground)
+        to_lay = QHBoxLayout(top_overlay)
+        to_lay.setContentsMargins(20, 16, 20, 0)
+        to_lay.addStretch()
+        self.btn_login_theme = QPushButton("Light Mode" if CURRENT_THEME == "dark" else "Dark Mode")
+        self.btn_login_theme.setFocusPolicy(Qt.NoFocus)
+        self.btn_login_theme.clicked.connect(self.theme_toggled.emit)
+        to_lay.addWidget(self.btn_login_theme)
+        root.addWidget(top_overlay, 0, 0, Qt.AlignTop)
+
         center_wrap = QWidget(self)
         center_wrap.setAttribute(Qt.WA_TranslucentBackground)
         c_lay = QVBoxLayout(center_wrap)
@@ -978,49 +1185,31 @@ class StaffLoginScreen(QWidget):
 
         self.card = QFrame()
         self.card.setFixedWidth(390)
-        self.card.setStyleSheet("""
-            QFrame {
-                background-color: #0E1424;
-                border: 1px solid #1E293B;
-                border-radius: 14px;
-            }
-        """)
         shadow = QGraphicsDropShadowEffect(self.card)
         shadow.setBlurRadius(32)
         shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 170))
+        shadow.setColor(QColor(0, 0, 0, 140))
         self.card.setGraphicsEffect(shadow)
 
         card_lay = QVBoxLayout(self.card)
         card_lay.setContentsMargins(28, 28, 28, 24)
         card_lay.setSpacing(14)
 
-        badge = QLabel("MDL")
-        badge.setAlignment(Qt.AlignCenter)
-        badge.setFixedSize(46, 46)
-        badge.setStyleSheet("""
-            background-color: #111C33;
-            border: 1px solid #2563EB;
-            border-radius: 11px;
-            color: #38BDF8;
-            font-size: 12.5pt;
-            font-weight: 800;
-            letter-spacing: 1px;
-        """)
+        self.badge = QLabel("MDL")
+        self.badge.setAlignment(Qt.AlignCenter)
+        self.badge.setFixedSize(46, 46)
         badge_row = QHBoxLayout()
         badge_row.setAlignment(Qt.AlignCenter)
-        badge_row.addWidget(badge)
+        badge_row.addWidget(self.badge)
         card_lay.addLayout(badge_row)
 
-        lbl_brand = QLabel("Monocytes Delegates LIS")
-        lbl_brand.setAlignment(Qt.AlignCenter)
-        lbl_brand.setStyleSheet("color: #F8FAFC; font-size: 14.5pt; font-weight: 700; border: none; background: transparent;")
-        card_lay.addWidget(lbl_brand)
+        self.lbl_brand = QLabel("Monocytes Delegates LIS")
+        self.lbl_brand.setAlignment(Qt.AlignCenter)
+        card_lay.addWidget(self.lbl_brand)
 
-        lbl_sub = QLabel("Clinical Laboratory Information System")
-        lbl_sub.setAlignment(Qt.AlignCenter)
-        lbl_sub.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
-        card_lay.addWidget(lbl_sub)
+        self.lbl_sub = QLabel("Clinical Laboratory Information System")
+        self.lbl_sub.setAlignment(Qt.AlignCenter)
+        card_lay.addWidget(self.lbl_sub)
 
         slot_row = QHBoxLayout()
         slot_row.setSpacing(12)
@@ -1030,22 +1219,12 @@ class StaffLoginScreen(QWidget):
             box = QLabel("•")
             box.setAlignment(Qt.AlignCenter)
             box.setFixedSize(52, 52)
-            box.setStyleSheet("""
-                background-color: #080C15;
-                border: 1px solid #263348;
-                border-radius: 10px;
-                color: #475569;
-                font-family: 'Consolas', monospace;
-                font-size: 18pt;
-                font-weight: 700;
-            """)
             self.pin_slots.append(box)
             slot_row.addWidget(box)
         card_lay.addLayout(slot_row)
 
         self.lbl_status = QLabel("Enter 4-digit staff PIN")
         self.lbl_status.setAlignment(Qt.AlignCenter)
-        self.lbl_status.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
         card_lay.addWidget(self.lbl_status)
 
         grid = QGridLayout()
@@ -1071,29 +1250,55 @@ class StaffLoginScreen(QWidget):
         self.btn_unlock.clicked.connect(self._verify_pin)
         card_lay.addWidget(self.btn_unlock)
 
-        lbl_hint = QLabel("Keyboard number pad supported")
-        lbl_hint.setAlignment(Qt.AlignCenter)
-        lbl_hint.setStyleSheet("color: #64748B; font-size: 8pt; border: none; background: transparent;")
-        card_lay.addWidget(lbl_hint)
+        self.lbl_hint = QLabel("Keyboard number pad supported")
+        self.lbl_hint.setAlignment(Qt.AlignCenter)
+        card_lay.addWidget(self.lbl_hint)
 
         c_lay.addWidget(self.card)
         root.addWidget(center_wrap, 0, 0)
         self.setFocusPolicy(Qt.StrongFocus)
+        self.apply_theme()
+
+    def apply_theme(self):
+        t = THEMES[CURRENT_THEME]
+        self.btn_login_theme.setText("Light Mode" if CURRENT_THEME == "dark" else "Dark Mode")
+        self.card.setStyleSheet(f"""
+            QFrame {{
+                background-color: {t['surface']};
+                border: 1px solid {t['border_strong']};
+                border-radius: 14px;
+            }}
+        """)
+        self.badge.setStyleSheet(f"""
+            background-color: {t['subpanel']};
+            border: 1px solid {t['accent']};
+            border-radius: 11px;
+            color: {t['accent']};
+            font-size: 12.5pt;
+            font-weight: 800;
+            letter-spacing: 1px;
+        """)
+        self.lbl_brand.setStyleSheet(f"color: {t['text_bright']}; font-size: 14.5pt; font-weight: 700; border: none; background: transparent;")
+        self.lbl_sub.setStyleSheet(f"color: {t['muted']}; font-size: 9pt; border: none; background: transparent;")
+        self.lbl_status.setStyleSheet(f"color: {t['muted']}; font-size: 9pt; border: none; background: transparent;")
+        self.lbl_hint.setStyleSheet(f"color: {t['muted']}; font-size: 8pt; border: none; background: transparent;")
+        self._refresh_slots(t["border_strong"])
+        self.bg_canvas.update()
 
     def reset_gate(self):
         self.pin_buffer = ""
         self.locked_transition = False
         self.lbl_status.setText("Enter 4-digit staff PIN")
-        self.lbl_status.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
-        self._refresh_slots("#263348")
+        self.apply_theme()
         self.setFocus()
 
     def _refresh_slots(self, border_hex="#38BDF8"):
+        t = THEMES[CURRENT_THEME]
         for i, slot in enumerate(self.pin_slots):
             if i < len(self.pin_buffer):
                 slot.setText("●")
                 slot.setStyleSheet(f"""
-                    background-color: #0B1426;
+                    background-color: {t['subpanel']};
                     border: 2px solid {border_hex};
                     border-radius: 10px;
                     color: {border_hex};
@@ -1103,11 +1308,11 @@ class StaffLoginScreen(QWidget):
                 """)
             else:
                 slot.setText("•")
-                slot.setStyleSheet("""
-                    background-color: #080C15;
-                    border: 1px solid #263348;
+                slot.setStyleSheet(f"""
+                    background-color: {t['input_bg']};
+                    border: 1px solid {t['border_strong']};
                     border-radius: 10px;
-                    color: #475569;
+                    color: {t['muted']};
                     font-family: 'Consolas', monospace;
                     font-size: 18pt;
                     font-weight: 700;
@@ -1130,18 +1335,19 @@ class StaffLoginScreen(QWidget):
     def _on_key(self, k: str):
         if self.locked_transition:
             return
+        t = THEMES[CURRENT_THEME]
         if k == "CLR":
             self.pin_buffer = ""
-            self._refresh_slots("#263348")
+            self._refresh_slots(t["border_strong"])
             self.lbl_status.setText("Enter 4-digit staff PIN")
-            self.lbl_status.setStyleSheet("color: #94A3B8; font-size: 9pt; border: none; background: transparent;")
+            self.lbl_status.setStyleSheet(f"color: {t['muted']}; font-size: 9pt; border: none; background: transparent;")
         elif k == "⌫":
             self.pin_buffer = self.pin_buffer[:-1]
-            self._refresh_slots("#38BDF8")
+            self._refresh_slots(t["accent"])
         else:
             if len(self.pin_buffer) < 4:
                 self.pin_buffer += k
-                self._refresh_slots("#38BDF8")
+                self._refresh_slots(t["accent"])
                 if len(self.pin_buffer) == 4:
                     QTimer.singleShot(80, self._verify_pin)
 
@@ -1149,28 +1355,337 @@ class StaffLoginScreen(QWidget):
         if self.locked_transition:
             return
         conn = get_conn()
-        row = conn.execute("SELECT pin, name, role FROM staff WHERE pin = ?", (self.pin_buffer,)).fetchone()
+        row = conn.execute("SELECT pin, name, role, prc_license, sig_path FROM staff WHERE pin = ?", (self.pin_buffer,)).fetchone()
         conn.close()
 
         if not row:
             self._refresh_slots("#F43F5E")
             self.lbl_status.setText("Invalid PIN — please try again")
-            self.lbl_status.setStyleSheet("color: #FB7185; font-size: 9pt; font-weight: 600; border: none; background: transparent;")
+            self.lbl_status.setStyleSheet("color: #F43F5E; font-size: 9pt; font-weight: 600; border: none; background: transparent;")
             self.pin_buffer = ""
             return
 
         self.locked_transition = True
         self._refresh_slots("#10B981")
-        user = {"pin": row["pin"], "name": row["name"], "role": row["role"]}
+        user = {
+            "pin": row["pin"],
+            "name": row["name"],
+            "role": row["role"],
+            "prc_license": row["prc_license"] or "",
+            "sig_path": row["sig_path"] or "",
+        }
         self.lbl_status.setText(f"Welcome, {user['name']}")
-        self.lbl_status.setStyleSheet("color: #34D399; font-size: 9.5pt; font-weight: 700; border: none; background: transparent;")
+        self.lbl_status.setStyleSheet("color: #10B981; font-size: 9.5pt; font-weight: 700; border: none; background: transparent;")
         log_audit(f"{user['name']} ({user['pin']})", "SESSION_UNLOCK", "-", f"Role: {user['role']}")
         QTimer.singleShot(260, lambda: self.authenticated.emit(user))
 
 
 # ==============================================================================
-# CLINICAL INTERACTIVE DIALOGS (CALCULATORS, 100-CELL WBC DIFF, ANTIBIOGRAM, HISTORY)
+# CLINICAL INTERACTIVE DIALOGS (BATCH PANEL, MICROSCOPY, CALCULATORS, DIFF, ABX)
 # ==============================================================================
+
+class BatchPanelDialog(QDialog):
+    """Fast keyboard-tabbable Batch Panel Result Entry & Auto-Calculated Indices."""
+
+    def __init__(self, specimen_id: str, operator_name: str, parent=None):
+        super().__init__(parent)
+        self.specimen_id = specimen_id
+        self.operator_name = operator_name
+        self.setWindowTitle(f"Batch Panel Result Entry — {specimen_id}")
+        self.resize(840, 520)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
+
+        conn = get_conn()
+        self.orders = [dict(r) for r in conn.execute("""
+            SELECT o.*, p.full_name, p.mrn, p.sex, p.dob
+            FROM orders o JOIN patients p ON o.patient_id = p.id
+            WHERE o.specimen_id = ? ORDER BY o.id ASC
+        """, (specimen_id,)).fetchall()]
+        self.patient = dict(conn.execute("SELECT * FROM patients WHERE id = ?", (self.orders[0]["patient_id"],)).fetchone()) if self.orders else {}
+        self.intervals = {}
+        for o in self.orders:
+            self.intervals[o["id"]] = resolve_patient_interval(
+                conn, o["test_name"], self.patient.get("sex"), self.patient.get("dob")
+            )
+        conn.close()
+
+        lay = QVBoxLayout(self)
+        hdr = QLabel(
+            f"Patient: {self.patient.get('full_name', '-')} ({self.patient.get('mrn', '-')})  |  "
+            f"Sex/DOB: {self.patient.get('sex', '-')} / {self.patient.get('dob', '-')}"
+        )
+        hdr.setObjectName("SectionHeader")
+        lay.addWidget(hdr)
+
+        sub = QLabel("Type results down the column (Tab moves to next test). MCV, MCH, MCHC, and LDL auto-compute when components are present.")
+        sub.setObjectName("MutedLabel")
+        lay.addWidget(sub)
+
+        self.tbl = QTableWidget(len(self.orders), 6)
+        self.tbl.setHorizontalHeaderLabels(["Assay", "Result", "Unit", "Demographic Ref. Range", "Auto-Flag", "Note"])
+        self.tbl.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl.setAlternatingRowColors(True)
+
+        self.result_inputs = {}
+        self.note_inputs = {}
+        self.flag_items = {}
+
+        for idx, o in enumerate(self.orders):
+            lo, hi, clo, chi, ref_lbl, _ = self.intervals[o["id"]]
+            it_name = _make_item(o["test_name"])
+            it_name.setFlags(Qt.ItemIsEnabled)
+            self.tbl.setItem(idx, 0, it_name)
+
+            inp = QLineEdit(o["result_value"] or "")
+            inp.setPlaceholderText("Enter value...")
+            inp.textChanged.connect(lambda _txt, row_idx=idx: self._on_row_changed(row_idx))
+            self.tbl.setCellWidget(idx, 1, inp)
+            self.result_inputs[o["test_name"]] = (o, inp)
+
+            it_unit = _make_item(o["unit"] or "-")
+            it_unit.setFlags(Qt.ItemIsEnabled)
+            self.tbl.setItem(idx, 2, it_unit)
+
+            it_ref = _make_item(ref_lbl)
+            it_ref.setFlags(Qt.ItemIsEnabled)
+            self.tbl.setItem(idx, 3, it_ref)
+
+            it_flag = _make_item(o["flag"] or o["status"])
+            it_flag.setFlags(Qt.ItemIsEnabled)
+            self.tbl.setItem(idx, 4, it_flag)
+            self.flag_items[idx] = it_flag
+
+            inp_note = QLineEdit(o["notes"] or "")
+            inp_note.setPlaceholderText("Optional note...")
+            self.tbl.setCellWidget(idx, 5, inp_note)
+            self.note_inputs[o["id"]] = inp_note
+
+            self._evaluate_row_flag(idx)
+
+        self.tbl.resizeRowsToContents()
+        lay.addWidget(self.tbl, 1)
+
+        btn_row = QHBoxLayout()
+        btn_calc = QPushButton("Auto-Compute Indices (MCV/MCH/MCHC/LDL)")
+        btn_calc.clicked.connect(self._auto_compute_derived)
+        btn_row.addWidget(btn_calc)
+
+        btn_row.addStretch()
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(self.reject)
+        btn_ver_all = QPushButton("Verify & Release Entire Panel")
+        btn_ver_all.setObjectName("SuccessBtn")
+        btn_ver_all.setMinimumHeight(38)
+        btn_ver_all.clicked.connect(self._verify_all)
+        btn_row.addWidget(btn_cancel)
+        btn_row.addWidget(btn_ver_all)
+        lay.addLayout(btn_row)
+
+    def _on_row_changed(self, row_idx: int):
+        self._evaluate_row_flag(row_idx)
+        self._auto_compute_derived(silent=True)
+
+    def _evaluate_row_flag(self, row_idx: int):
+        o = self.orders[row_idx]
+        _, inp = self.result_inputs[o["test_name"]]
+        val_str = inp.text().strip()
+        it_flag = self.flag_items[row_idx]
+        if not val_str:
+            it_flag.setText("PENDING")
+            it_flag.setForeground(QColor("#94A3B8"))
+            return
+        lo, hi, clo, chi, _, _ = self.intervals[o["id"]]
+        flag = "NORMAL"
+        try:
+            v = float(val_str)
+            if clo is not None and v <= clo:
+                flag = "CRITICAL LOW"
+            elif chi is not None and v >= chi:
+                flag = "CRITICAL HIGH"
+            elif lo is not None and v < lo:
+                flag = "LOW"
+            elif hi is not None and v > hi:
+                flag = "HIGH"
+        except Exception:
+            if any(k in val_str.upper() for k in ("REACTIVE", "POSITIVE", "MRSA", "ABNORMAL")):
+                flag = "ABNORMAL"
+        it_flag.setText(flag)
+        if "CRITICAL" in flag or flag in ("HIGH", "ABNORMAL"):
+            it_flag.setForeground(QColor("#FB7185"))
+        elif flag == "LOW":
+            it_flag.setForeground(QColor("#FBBF24"))
+        else:
+            it_flag.setForeground(QColor("#10B981"))
+
+    def _get_num(self, test_name: str):
+        pair = self.result_inputs.get(test_name)
+        if not pair:
+            return None
+        try:
+            return float(pair[1].text().strip())
+        except Exception:
+            return None
+
+    def _set_num_if_present(self, test_name: str, value: float, decimals: int = 1):
+        pair = self.result_inputs.get(test_name)
+        if not pair:
+            return
+        inp = pair[1]
+        inp.blockSignals(True)
+        inp.setText(f"{value:.{decimals}f}")
+        inp.blockSignals(False)
+        for idx, o in enumerate(self.orders):
+            if o["test_name"] == test_name:
+                self._evaluate_row_flag(idx)
+
+    def _auto_compute_derived(self, silent: bool = False):
+        rbc = self._get_num("Red Blood Cell Count (RBC)")
+        hgb = self._get_num("Hemoglobin (Hgb)")
+        hct = self._get_num("Hematocrit (Hct)")
+        if rbc and hct and rbc > 0:
+            self._set_num_if_present("MCV", (hct * 10.0) / rbc, 1)
+        if rbc and hgb and rbc > 0:
+            self._set_num_if_present("MCH", (hgb * 10.0) / rbc, 1)
+        if hct and hgb and hct > 0:
+            self._set_num_if_present("MCHC", (hgb * 100.0) / hct, 1)
+
+        tc = self._get_num("Total Cholesterol")
+        tg = self._get_num("Triglycerides")
+        hdl = self._get_num("HDL Cholesterol")
+        if tc is not None and tg is not None and hdl is not None and tg < 400:
+            self._set_num_if_present("LDL Cholesterol (Calc)", tc - hdl - (tg / 5.0), 1)
+
+    def _verify_all(self):
+        conn = get_conn()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        verified_count = 0
+
+        for idx, o in enumerate(self.orders):
+            _, inp = self.result_inputs[o["test_name"]]
+            val_str = inp.text().strip()
+            if not val_str:
+                continue
+            lo, hi, clo, chi, ref_lbl, _ = self.intervals[o["id"]]
+            flag = "NORMAL"
+            is_crit = 0
+            try:
+                v = float(val_str)
+                if clo is not None and v <= clo:
+                    flag = "CRITICAL LOW"; is_crit = 1
+                elif chi is not None and v >= chi:
+                    flag = "CRITICAL HIGH"; is_crit = 1
+                elif lo is not None and v < lo:
+                    flag = "LOW"
+                elif hi is not None and v > hi:
+                    flag = "HIGH"
+            except Exception:
+                if any(k in val_str.upper() for k in ("REACTIVE", "POSITIVE", "MRSA", "ABNORMAL")):
+                    flag = "ABNORMAL"
+
+            note_txt = self.note_inputs[o["id"]].text().strip()
+            conn.execute("""
+                UPDATE orders SET
+                    result_value = ?, flag = ?, status = 'Verified', ref_range = ?,
+                    notes = ?, verified_by = ?, verified_at = ?, critical_flag = ?
+                WHERE id = ?
+            """, (val_str, flag, ref_lbl, note_txt, self.operator_name, now, is_crit, o["id"]))
+            verified_count += 1
+
+        conn.commit()
+        conn.close()
+        if verified_count == 0:
+            show_warn(self, "No Results Entered", "Enter at least one test value before verifying.")
+            return
+        log_audit(self.operator_name, "BATCH_PANEL_VERIFIED", self.specimen_id, f"Verified {verified_count} assays")
+        self.accept()
+
+
+class MicroscopyDialog(QDialog):
+    """Structured Clinical Microscopy (Urinalysis & Fecalysis) Form."""
+
+    def __init__(self, test_name: str, existing_json: str = "", parent=None):
+        super().__init__(parent)
+        self.is_fecal = "fecal" in test_name.lower()
+        self.setWindowTitle(f"Clinical Microscopy — {test_name}")
+        self.resize(560, 560)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
+
+        saved = {}
+        if existing_json:
+            try:
+                saved = json.loads(existing_json)
+            except Exception:
+                saved = {}
+
+        lay = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setObjectName("DarkScroll")
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        inner.setObjectName("ScrollContent")
+        grid = QGridLayout(inner)
+        grid.setContentsMargins(14, 14, 14, 14)
+        grid.setSpacing(8)
+
+        self.fields = {}
+        if not self.is_fecal:
+            specs = [
+                ("Color", ["Yellow", "Straw", "Amber", "Dark Yellow", "Reddish / Hematuria", "Cloudy White"]),
+                ("Transparency", ["Clear", "Slightly Turbid", "Turbid", "Flocculent"]),
+                ("Specific Gravity", ["1.005", "1.010", "1.015", "1.020", "1.025", "1.030"]),
+                ("Reaction (pH)", ["5.0", "5.5", "6.0", "6.5", "7.0", "7.5", "8.0"]),
+                ("Protein (Albumin)", ["Negative", "Trace", "+1 (30 mg/dL)", "+2 (100 mg/dL)", "+3 (300 mg/dL)", "+4 (>1000 mg/dL)"]),
+                ("Glucose (Sugar)", ["Negative", "Trace", "+1 (100 mg/dL)", "+2 (250 mg/dL)", "+3 (500 mg/dL)", "+4 (>1000 mg/dL)"]),
+                ("Ketones", ["Negative", "Trace", "Small (+1)", "Moderate (+2)", "Large (+3)"]),
+                ("Blood / Hemoglobin", ["Negative", "Trace", "+1", "+2", "+3"]),
+                ("Bilirubin / Urobilinogen", ["Negative / Normal", "Bilirubin +1", "Urobilinogen Increased"]),
+                ("Nitrite / Leukocyte Est.", ["Negative / Negative", "Nitrite Pos / LE Neg", "Nitrite Neg / LE Pos", "Both Positive"]),
+                ("Pus Cells (WBC / hpf)", ["0 - 2 /hpf", "2 - 5 /hpf", "5 - 10 /hpf", "10 - 20 /hpf", "20 - 50 /hpf", "TNTC (>100 /hpf)"]),
+                ("Red Blood Cells (RBC / hpf)", ["0 - 1 /hpf", "1 - 3 /hpf", "3 - 10 /hpf", "10 - 30 /hpf", "TNTC (>100 /hpf)"]),
+                ("Epithelial Cells", ["Few", "Moderate", "Many"]),
+                ("Bacteria", ["None Seen", "Few", "Moderate", "Many"]),
+                ("Casts & Crystals", ["None Seen", "Hyaline Casts (0-2/lpf)", "Granular Casts", "Calcium Oxalate Crystals", "Uric Acid Crystals", "Amorphous Urates"]),
+            ]
+        else:
+            specs = [
+                ("Color", ["Brown", "Dark Brown", "Yellowish", "Greenish", "Black / Melena", "Reddish"]),
+                ("Consistency", ["Formed", "Semi-Formed", "Soft", "Mushy", "Watery / Liquid"]),
+                ("Mucus", ["Absent", "Present (+1)", "Abundant (+3)"]),
+                ("Occult Blood", ["Negative", "Positive"]),
+                ("Pus Cells (WBC / hpf)", ["0 - 1 /hpf", "2 - 5 /hpf", "5 - 15 /hpf", "TNTC"]),
+                ("Red Blood Cells (RBC / hpf)", ["None Seen", "1 - 3 /hpf", "5 - 15 /hpf", "Many"]),
+                ("Fat Globules / Starch", ["None Seen", "Few", "Moderate", "Many"]),
+                ("Ova & Parasites (NOPS)", ["No Ova or Parasites Seen (NOPS)", "Ascaris lumbricoides ova", "Trichuris trichiura ova", "Hookworm ova", "Entamoeba histolytica cysts/trophs", "Giardia lamblia cysts"]),
+            ]
+
+        for idx, (label, opts) in enumerate(specs):
+            grid.addWidget(QLabel(label + ":"), idx, 0)
+            cmb = QComboBox()
+            cmb.setEditable(True)
+            cmb.addItems(opts)
+            if label in saved:
+                cmb.setCurrentText(saved[label])
+            grid.addWidget(cmb, idx, 1)
+            self.fields[label] = cmb
+
+        scroll.setWidget(inner)
+        lay.addWidget(scroll)
+
+        btn_save = QPushButton("Save Microscopy Findings")
+        btn_save.setObjectName("SuccessBtn")
+        btn_save.clicked.connect(self.accept)
+        lay.addWidget(btn_save)
+
+    def export_payload(self):
+        data = {k: cmb.currentText().strip() for k, cmb in self.fields.items()}
+        if self.is_fecal:
+            summary = f"{data.get('Color', '')} / {data.get('Consistency', '')} / {data.get('Ova & Parasites (NOPS)', 'NOPS')}"
+        else:
+            summary = f"{data.get('Color', '')} / {data.get('Transparency', '')} / WBC:{data.get('Pus Cells (WBC / hpf)', '')}"
+        return json.dumps(data), summary
+
 
 class RmtCalculatorDialog(QDialog):
     """Hematology & Clinical Chemistry derived indices calculator."""
@@ -1179,8 +1694,8 @@ class RmtCalculatorDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Clinical Indices Calculator")
         self.resize(520, 440)
-        self.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(self)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
         self.generated_summary = ""
 
         lay = QVBoxLayout(self)
@@ -1317,8 +1832,8 @@ class WbcDiffCounterDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("100-Cell WBC Differential & Smear Morphology")
         self.resize(600, 500)
-        self.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(self)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
 
         self.counts = {"Neutrophils": 0, "Lymphocytes": 0, "Monocytes": 0, "Eosinophils": 0, "Basophils": 0, "nRBC": 0}
         if existing_json:
@@ -1342,8 +1857,8 @@ class WbcDiffCounterDialog(QDialog):
         grid = QGridLayout()
         self.cell_labels = {}
         specs = [
-            ("Neutrophils", "N", "#38BDF8"),
-            ("Lymphocytes", "L", "#818CF8"),
+            ("Neutrophils", "N", "#0284C7"),
+            ("Lymphocytes", "L", "#6366F1"),
             ("Monocytes", "M", "#10B981"),
             ("Eosinophils", "E", "#F59E0B"),
             ("Basophils", "B", "#EC4899"),
@@ -1420,7 +1935,7 @@ class WbcDiffCounterDialog(QDialog):
         tot = self._wbc_sum()
         self.lbl_total.setText(f"WBC Counted: {tot} / 100  {'(Complete)' if tot == 100 else ''}")
         self.lbl_total.setStyleSheet(
-            f"font-size: 15pt; font-weight: 700; color: {'#10B981' if tot == 100 else '#38BDF8'}; padding: 6px;"
+            f"font-size: 15pt; font-weight: 700; color: {'#10B981' if tot == 100 else '#0284C7'}; padding: 6px;"
         )
         for cell, lbl in self.cell_labels.items():
             c = self.counts[cell]
@@ -1451,8 +1966,8 @@ class AntibiogramDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Culture & Antibiogram (S / I / R)")
         self.resize(540, 520)
-        self.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(self)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
 
         saved = {}
         if existing_json:
@@ -1527,8 +2042,8 @@ class PatientHistoryDialog(QDialog):
         super().__init__(parent)
         self.patient_id = patient_id
         self.resize(920, 600)
-        self.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(self)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
 
         conn = get_conn()
         pt = conn.execute("SELECT * FROM patients WHERE id = ?", (patient_id,)).fetchone()
@@ -1580,11 +2095,11 @@ class PatientHistoryDialog(QDialog):
             self.tbl.setItem(i, 4, _make_item(r["unit"] or ""))
             fl_col = None
             if r["flag"] in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL"):
-                fl_col = "#FB7185"
+                fl_col = "#E11D48"
             elif r["flag"] == "LOW":
-                fl_col = "#FBBF24"
+                fl_col = "#D97706"
             elif r["flag"] == "NORMAL":
-                fl_col = "#34D399"
+                fl_col = "#059669"
             self.tbl.setItem(i, 5, _make_item(r["flag"] or r["status"], fl_col))
             self.tbl.setItem(i, 6, _make_item(r["verified_by"] or "-"))
         self.tbl.resizeRowsToContents()
@@ -1601,6 +2116,7 @@ class PatientHistoryDialog(QDialog):
             return False
 
     def _plot_trend(self, test_name: str):
+        t = THEMES[CURRENT_THEME]
         ax = self.canvas.ax
         ax.clear()
         self.canvas._style_ax(ax)
@@ -1624,13 +2140,13 @@ class PatientHistoryDialog(QDialog):
             ax.axhline(lo, color="#10B981", linestyle="--", linewidth=0.9, alpha=0.6)
             ax.axhline(hi, color="#10B981", linestyle="--", linewidth=0.9, alpha=0.6)
 
-        ax.plot(xs, ys, color="#38BDF8", marker="o", linewidth=2.0, markersize=6, label=test_name)
+        ax.plot(xs, ys, color="#0284C7", marker="o", linewidth=2.0, markersize=6, label=test_name)
         for x, y in zip(xs, ys):
-            ax.annotate(f"{y:g}", (x, y), textcoords="offset points", xytext=(0, 7), ha="center", color="#F8FAFC", fontsize=8)
+            ax.annotate(f"{y:g}", (x, y), textcoords="offset points", xytext=(0, 7), ha="center", color=t["text_bright"], fontsize=8)
 
         ax.set_title(f"Serial Trend: {test_name} ({unit})", fontsize=10, fontweight="bold")
-        ax.grid(True, color="#1E293B", linestyle=":", linewidth=0.8)
-        ax.legend(loc="upper left", facecolor="#090E1A", edgecolor="#263348", labelcolor="#E2E8F0", fontsize=8)
+        ax.grid(True, color=t["chart_grid"], linestyle=":", linewidth=0.8)
+        ax.legend(loc="upper left", facecolor=t["surface"], edgecolor=t["border_strong"], labelcolor=t["text"], fontsize=8)
         self.canvas.fig.tight_layout()
         self.canvas.draw()
 
@@ -1710,6 +2226,7 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
     pathologist_notes = []
     antibiograms = []
     diffs = []
+    microscopies = []
 
     for idx, o in enumerate(orders):
         if y > 245:
@@ -1730,6 +2247,11 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
         if o.get("diff_json"):
             try:
                 diffs.append((o["test_name"], json.loads(o["diff_json"])))
+            except Exception:
+                pass
+        if o.get("microscopy_json"):
+            try:
+                microscopies.append((o["test_name"], json.loads(o["microscopy_json"])))
             except Exception:
                 pass
 
@@ -1785,9 +2307,44 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
             pdf.multi_cell(182, 4.5, _pdf_safe("  |  ".join(note_bits)))
             y = pdf.get_y() + 1
 
+    # Lookup PRC license & signature image paths for verifiers and Pathologist
+    rmt_prc = ""
+    rmt_sig_path = ""
+    if verifiers:
+        first_rmt = sorted(verifiers)[0]
+        s_row = conn.execute("SELECT prc_license, sig_path FROM staff WHERE name = ?", (first_rmt,)).fetchone()
+        if s_row:
+            rmt_prc = s_row["prc_license"] or ""
+            rmt_sig_path = s_row["sig_path"] or ""
+
+    md_row = conn.execute("SELECT prc_license, sig_path FROM staff WHERE pin = '1111'").fetchone()
+    md_prc = md_row["prc_license"] if md_row and md_row["prc_license"] else "PRC-0142890"
+    md_sig_path = md_row["sig_path"] if md_row and md_row["sig_path"] else ""
     conn.close()
 
+    for t_name, m_obj in microscopies:
+        if y > 235:
+            pdf.add_page(); y = 18
+        y += 3
+        pdf.set_font("Helvetica", "B", 9)
+        pdf.set_text_color(15, 23, 42)
+        pdf.set_xy(12, y)
+        pdf.cell(186, 5, _pdf_safe(f"Structured Clinical Microscopy Report ({t_name}):"))
+        y += 5.5
+        pdf.set_font("Helvetica", "", 8)
+        items = list(m_obj.items())
+        for i in range(0, len(items), 2):
+            k1, v1 = items[i]
+            pdf.set_xy(14, y)
+            pdf.cell(92, 4.8, _pdf_safe(f"{k1}: {v1}"), border=1)
+            if i + 1 < len(items):
+                k2, v2 = items[i + 1]
+                pdf.cell(92, 4.8, _pdf_safe(f"{k2}: {v2}"), border=1)
+            y += 4.8
+
     for t_name, d_obj in diffs:
+        if y > 240:
+            pdf.add_page(); y = 18
         y += 3
         pdf.set_font("Helvetica", "B", 9)
         pdf.set_text_color(15, 23, 42)
@@ -1811,6 +2368,8 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
             y = pdf.get_y() + 2
 
     for t_name, abg in antibiograms:
+        if y > 235:
+            pdf.add_page(); y = 18
         y += 3
         pdf.set_font("Helvetica", "B", 9)
         pdf.set_text_color(15, 23, 42)
@@ -1840,10 +2399,21 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
         pdf.multi_cell(186, 5, _pdf_safe("\n".join(pathologist_notes)), border=1)
         y = pdf.get_y() + 2
 
-    y = max(y + 12, 248)
-    if y > 268:
+    y = max(y + 14, 246)
+    if y > 266:
         pdf.add_page()
-        y = 240
+        y = 238
+
+    if rmt_sig_path and os.path.exists(rmt_sig_path):
+        try:
+            pdf.image(rmt_sig_path, x=35, y=y - 12, w=40)
+        except Exception:
+            pass
+    if md_sig_path and os.path.exists(md_sig_path):
+        try:
+            pdf.image(md_sig_path, x=135, y=y - 12, w=40)
+        except Exception:
+            pass
 
     rmt_line = ", ".join(sorted(verifiers)) if verifiers else "Pending RMT Verification"
     pdf.set_draw_color(100, 116, 139)
@@ -1860,15 +2430,16 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
     pdf.set_font("Helvetica", "", 7.8)
     pdf.set_text_color(71, 85, 105)
     pdf.set_xy(15, y + 6)
-    pdf.cell(80, 4, _pdf_safe("Performing Medical Technologist (RMT)"), align="C")
+    rmt_sub = f"Medical Technologist (RMT)  {rmt_prc}".strip()
+    pdf.cell(80, 4, _pdf_safe(rmt_sub), align="C")
     pdf.set_xy(115, y + 6)
-    pdf.cell(80, 4, _pdf_safe(f"Anatomic & Clinical Pathologist  {pathologist_sig}"), align="C")
+    md_sub = f"Anatomic & Clinical Pathologist  {md_prc}  {pathologist_sig}".strip()
+    pdf.cell(80, 4, _pdf_safe(md_sub), align="C")
 
     pdf.output(out_path)
 
 
 def generate_barcode_label_pdf(patient: dict, specimen_id: str, order: dict, out_path: str):
-    """Generates a 3.0 x 1.5 inch (76.2 x 38.1 mm) thermal tube barcode label."""
     pdf = FPDF(orientation="L", unit="mm", format=(38.1, 76.2))
     pdf.set_auto_page_break(auto=False)
     pdf.add_page()
@@ -1884,7 +2455,7 @@ def generate_barcode_label_pdf(patient: dict, specimen_id: str, order: dict, out
     digest = hashlib.sha256(specimen_id.encode()).hexdigest()
     bx = 5.0
     pdf.set_fill_color(0, 0, 0)
-    for i, ch in enumerate(digest[:42]):
+    for ch in digest[:42]:
         val = int(ch, 16)
         bar_w = 0.45 if (val % 3 == 0) else 0.85
         gap_w = 0.45 if (val % 2 == 0) else 0.75
@@ -1972,11 +2543,13 @@ def generate_shift_handover_pdf(operator_name: str, shift_label: str, out_path: 
 
 class MainWorkspace(QWidget):
     lock_requested = Signal()
+    theme_toggled = Signal()
 
     def __init__(self, current_user: dict, parent=None):
         super().__init__(parent)
         self.user = current_user
         self.selected_order_id = None
+        self.selected_specimen_id = None
         self.qc_lockout_enabled = False
         self.failed_qc_tests = set()
         self.editing_patient_id = None
@@ -1995,15 +2568,11 @@ class MainWorkspace(QWidget):
         tb_lay.setContentsMargins(16, 6, 16, 6)
         tb_lay.setSpacing(10)
 
-        lbl_logo = QLabel("Monocytes Delegates LIS")
-        lbl_logo.setStyleSheet("color: #F8FAFC; font-size: 12pt; font-weight: 700;")
-        tb_lay.addWidget(lbl_logo)
+        self.lbl_logo = QLabel("Monocytes Delegates LIS")
+        self.lbl_logo.setStyleSheet("font-size: 12pt; font-weight: 700;")
+        tb_lay.addWidget(self.lbl_logo)
 
         self.lbl_qc_pill = QLabel("QC: In Control")
-        self.lbl_qc_pill.setStyleSheet(
-            "background-color: rgba(16,185,129,0.14); border: 1px solid #10B981; "
-            "color: #34D399; border-radius: 6px; padding: 3px 10px; font-weight: 600; font-size: 8.5pt;"
-        )
         tb_lay.addWidget(self.lbl_qc_pill)
 
         tb_lay.addStretch()
@@ -2014,14 +2583,16 @@ class MainWorkspace(QWidget):
 
         role_short = "Pathologist" if "Pathologist" in self.user["role"] else "RMT"
         op_full = f"{self.user['name']}  •  {role_short}"
-        lbl_op = QLabel(op_full)
-        lbl_op.setToolTip(op_full)
-        lbl_op.setMaximumWidth(310)
-        lbl_op.setStyleSheet(
-            "background-color: #131C31; border: 1px solid #334155; color: #E2E8F0; "
-            "border-radius: 6px; padding: 4px 12px; font-weight: 600;"
-        )
-        tb_lay.addWidget(lbl_op)
+        self.lbl_op = QLabel(op_full)
+        self.lbl_op.setToolTip(op_full)
+        self.lbl_op.setMaximumWidth(295)
+        self.lbl_op.setObjectName("MonoBadge")
+        tb_lay.addWidget(self.lbl_op)
+
+        self.btn_theme = QPushButton("Light Mode" if CURRENT_THEME == "dark" else "Dark Mode")
+        self.btn_theme.setToolTip("Switch between Light and Dark interface themes")
+        self.btn_theme.clicked.connect(self.theme_toggled.emit)
+        tb_lay.addWidget(self.btn_theme)
 
         self.btn_admin_mode = QPushButton("Admin Mode")
         self.btn_admin_mode.clicked.connect(self._toggle_admin_mode)
@@ -2034,7 +2605,7 @@ class MainWorkspace(QWidget):
 
         root.addWidget(top_bar)
 
-        # Main Tabbed Workspace (Reports & Admin hidden until Admin Mode is unlocked)
+        # Main Tabbed Workspace
         body = QWidget()
         body_lay = QVBoxLayout(body)
         body_lay.setContentsMargins(12, 10, 12, 12)
@@ -2052,15 +2623,34 @@ class MainWorkspace(QWidget):
 
         root.addWidget(body, 1)
 
-        sc = QShortcut(QKeySequence("Ctrl+F"), self)
-        sc.activated.connect(self._focus_search)
+        QShortcut(QKeySequence("Ctrl+F"), self).activated.connect(self._focus_search)
+        QShortcut(QKeySequence("Ctrl+B"), self).activated.connect(self._focus_barcode)
 
         self.clock_timer = QTimer(self)
         self.clock_timer.timeout.connect(self._update_clock)
         self.clock_timer.start(1000)
         self._update_clock()
 
+        # Real-time background sync polling for multi-workstation LAN mode
+        self.sync_timer = QTimer(self)
+        self.sync_timer.timeout.connect(self._passive_sync)
+        self.sync_timer.start(8000)
+
+        self._update_qc_pill()
         self.refresh_all()
+
+    def on_theme_changed(self):
+        self.btn_theme.setText("Light Mode" if CURRENT_THEME == "dark" else "Dark Mode")
+        self._update_qc_pill()
+        self.range_gauge.update()
+        self.tube_badge.update()
+        self.refresh_worklist()
+        self.refresh_qc()
+
+    def _passive_sync(self):
+        if self.tabs.currentIndex() == 0 and not self.in_result.hasFocus():
+            self.refresh_kpis()
+            self.refresh_worklist()
 
     def _toggle_admin_mode(self):
         if self.admin_mode:
@@ -2095,6 +2685,11 @@ class MainWorkspace(QWidget):
         self.in_search.setFocus()
         self.in_search.selectAll()
 
+    def _focus_barcode(self):
+        self.tabs.setCurrentIndex(0)
+        self.in_barcode.setFocus()
+        self.in_barcode.selectAll()
+
     # --------------------------------------------------------------------------
     # TAB 1: WORKLIST (GROUPED BY PATIENT/SPECIMEN) & CLINICAL INSPECTOR
     # --------------------------------------------------------------------------
@@ -2107,10 +2702,16 @@ class MainWorkspace(QWidget):
         flt = QHBoxLayout()
         flt.setSpacing(8)
 
+        self.in_barcode = QLineEdit()
+        self.in_barcode.setPlaceholderText("Scan Tube Barcode (Ctrl+B)...")
+        self.in_barcode.setMaximumWidth(205)
+        self.in_barcode.returnPressed.connect(self._on_barcode_scan)
+        flt.addWidget(self.in_barcode)
+
         self.in_search = QLineEdit()
-        self.in_search.setPlaceholderText("Search specimen ID, patient name, MRN, or test (Ctrl+F)...")
+        self.in_search.setPlaceholderText("Filter specimen, patient, MRN, or test (Ctrl+F)...")
         self.in_search.textChanged.connect(self.refresh_worklist)
-        flt.addWidget(self.in_search, 3)
+        flt.addWidget(self.in_search, 2)
 
         self.cmb_dept_filter = QComboBox()
         self.cmb_dept_filter.addItems([
@@ -2129,12 +2730,10 @@ class MainWorkspace(QWidget):
         flt.addWidget(self.cmb_status_filter, 1)
 
         btn_exp_all = QPushButton("Expand All")
-        btn_exp_all.setToolTip("Expand all grouped patient orders")
         btn_exp_all.clicked.connect(self._expand_all_groups)
         flt.addWidget(btn_exp_all)
 
         btn_col_all = QPushButton("Minimize All")
-        btn_col_all.setToolTip("Minimize all grouped patient orders")
         btn_col_all.clicked.connect(self._collapse_all_groups)
         flt.addWidget(btn_col_all)
 
@@ -2155,18 +2754,18 @@ class MainWorkspace(QWidget):
         self.tbl_worklist = QTreeWidget()
         self.tbl_worklist.setColumnCount(8)
         self.tbl_worklist.setHeaderLabels([
-            "Specimen ID", "Patient Name", "Test / Assay", "Department", "Priority", "TAT", "Result", "Status"
+            "Specimen ID", "Patient Name", "Test / Assay", "Department", "Priority", "TAT (Coll / Bench)", "Result", "Status"
         ])
         hdr = self.tbl_worklist.header()
         hdr.setSectionResizeMode(QHeaderView.Interactive)
         hdr.setStretchLastSection(True)
         self.tbl_worklist.setColumnWidth(0, 155)
-        self.tbl_worklist.setColumnWidth(1, 180)
-        self.tbl_worklist.setColumnWidth(2, 200)
-        self.tbl_worklist.setColumnWidth(3, 125)
-        self.tbl_worklist.setColumnWidth(4, 72)
-        self.tbl_worklist.setColumnWidth(5, 78)
-        self.tbl_worklist.setColumnWidth(6, 110)
+        self.tbl_worklist.setColumnWidth(1, 175)
+        self.tbl_worklist.setColumnWidth(2, 195)
+        self.tbl_worklist.setColumnWidth(3, 120)
+        self.tbl_worklist.setColumnWidth(4, 68)
+        self.tbl_worklist.setColumnWidth(5, 118)
+        self.tbl_worklist.setColumnWidth(6, 105)
         self.tbl_worklist.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_worklist.setSelectionMode(QAbstractItemView.SingleSelection)
         self.tbl_worklist.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -2184,7 +2783,7 @@ class MainWorkspace(QWidget):
         scroll = QScrollArea()
         scroll.setObjectName("DarkScroll")
         scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(390)
+        scroll.setMinimumWidth(400)
 
         insp = QWidget()
         insp.setObjectName("CardScrollContent")
@@ -2197,7 +2796,7 @@ class MainWorkspace(QWidget):
         self.lbl_insp_spec.setWordWrap(True)
         il.addWidget(self.lbl_insp_spec)
 
-        self.lbl_insp_meta = QLabel("Click any row on the left to enter results, inspect reference ranges, or print reports.")
+        self.lbl_insp_meta = QLabel("Click any row on the left to enter results, inspect demographic reference ranges, or print reports.")
         self.lbl_insp_meta.setObjectName("MutedLabel")
         self.lbl_insp_meta.setWordWrap(True)
         il.addWidget(self.lbl_insp_meta)
@@ -2228,6 +2827,13 @@ class MainWorkspace(QWidget):
         self.btn_verify.clicked.connect(self._verify_selected_order)
         act_row.addWidget(self.btn_verify, 2)
 
+        self.btn_batch = QPushButton("Batch Panel")
+        self.btn_batch.setObjectName("PrimaryBtn")
+        self.btn_batch.setMinimumHeight(38)
+        self.btn_batch.setToolTip("Open multi-test grid entry for all assays in this specimen")
+        self.btn_batch.clicked.connect(self._open_batch_panel)
+        act_row.addWidget(self.btn_batch, 1)
+
         btn_reject = QPushButton("Reject")
         btn_reject.setObjectName("DangerBtn")
         btn_reject.setMinimumHeight(38)
@@ -2251,17 +2857,21 @@ class MainWorkspace(QWidget):
         stage_row.addWidget(btn_store)
         il.addLayout(stage_row)
 
-        tools_row = QHBoxLayout()
+        tools_grid = QGridLayout()
+        tools_grid.setSpacing(6)
         btn_calc = QPushButton("Calculators")
         btn_calc.clicked.connect(self._open_calculators)
         btn_diff = QPushButton("100-Cell Diff")
         btn_diff.clicked.connect(self._open_wbc_diff)
+        btn_micro = QPushButton("Microscopy Form")
+        btn_micro.clicked.connect(self._open_microscopy_form)
         btn_abx = QPushButton("Antibiogram")
         btn_abx.clicked.connect(self._open_antibiogram)
-        tools_row.addWidget(btn_calc)
-        tools_row.addWidget(btn_diff)
-        tools_row.addWidget(btn_abx)
-        il.addLayout(tools_row)
+        tools_grid.addWidget(btn_calc, 0, 0)
+        tools_grid.addWidget(btn_diff, 0, 1)
+        tools_grid.addWidget(btn_micro, 1, 0)
+        tools_grid.addWidget(btn_abx, 1, 1)
+        il.addLayout(tools_grid)
 
         grp_rep = QLabel("REPORTS & PATIENT RECORD")
         grp_rep.setObjectName("GroupTitle")
@@ -2288,6 +2898,23 @@ class MainWorkspace(QWidget):
         lay.addWidget(splitter, 1)
         return w
 
+    def _on_barcode_scan(self):
+        code = self.in_barcode.text().strip()
+        if not code:
+            return
+        conn = get_conn()
+        row = conn.execute("SELECT id, specimen_id FROM orders WHERE specimen_id LIKE ? ORDER BY id ASC LIMIT 1", (f"%{code}%",)).fetchone()
+        conn.close()
+        self.in_barcode.clear()
+        if not row:
+            show_warn(self, "Specimen Not Found", f"No specimen matching '{code}' in active worklist.")
+            return
+        self.collapsed_specimens.discard(row["specimen_id"])
+        self.selected_order_id = row["id"]
+        self.refresh_worklist()
+        self._load_inspector_order(row["id"], animate_from_center=False)
+        self.in_result.setFocus()
+
     def _expand_all_groups(self):
         self.collapsed_specimens.clear()
         self.tbl_worklist.expandAll()
@@ -2313,7 +2940,10 @@ class MainWorkspace(QWidget):
 
     def _on_worklist_double_click(self, item: QTreeWidgetItem, col: int):
         if item.childCount() > 0:
-            item.setExpanded(not item.isExpanded())
+            spec_id = item.data(0, Qt.UserRole + 1)
+            if spec_id:
+                self.selected_specimen_id = spec_id
+                self._open_batch_panel()
         else:
             self.in_result.setFocus()
             self.in_result.selectAll()
@@ -2334,15 +2964,17 @@ class MainWorkspace(QWidget):
         self.selected_order_id = order_id
         conn = get_conn()
         o = conn.execute("""
-            SELECT o.*, p.full_name, p.mrn, p.sex, p.dob, t.low_val, t.high_val, t.crit_low, t.crit_high
+            SELECT o.*, p.full_name, p.mrn, p.sex, p.dob
             FROM orders o
             JOIN patients p ON o.patient_id = p.id
-            LEFT JOIN tests t ON o.test_name = t.test_name
             WHERE o.id = ?
         """, (order_id,)).fetchone()
-        conn.close()
         if not o:
+            conn.close()
             return
+        self.selected_specimen_id = o["specimen_id"]
+        lo, hi, clo, chi, ref_lbl, _ = resolve_patient_interval(conn, o["test_name"], o["sex"], o["dob"])
+        conn.close()
 
         self.lbl_insp_spec.setText(f"{o['specimen_id']}  •  {o['test_name']}")
         slot_txt = o["storage_slot"] or "Unassigned"
@@ -2350,15 +2982,52 @@ class MainWorkspace(QWidget):
             f"Patient: {o['full_name']} ({o['mrn']})\n"
             f"Demographics: {o['sex'] or '-'}  |  DOB/Age: {o['dob'] or '-'}\n"
             f"Priority: {o['priority']}  |  Stage: {o['status']}  |  Storage: {slot_txt}\n"
-            f"Reference Range: {o['ref_range'] or '-'} {o['unit'] or ''}"
+            f"Ref. Range ({o['sex'] or 'All'}): {ref_lbl} {o['unit'] or ''}"
         )
         self.tube_badge.set_tube(o["tube_type"])
         self.in_result.setText(o["result_value"] or "")
         self.in_notes.setText(o["notes"] or "")
         self.range_gauge.set_reading(
-            o["result_value"] or "", o["low_val"], o["high_val"], o["crit_low"], o["crit_high"],
+            o["result_value"] or "", lo, hi, clo, chi,
             o["flag"] or o["status"], animate_from_center=animate_from_center
         )
+
+    def _open_batch_panel(self):
+        spec_id = self.selected_specimen_id
+        if not spec_id and self.selected_order_id:
+            conn = get_conn()
+            r = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (self.selected_order_id,)).fetchone()
+            conn.close()
+            if r:
+                spec_id = r["specimen_id"]
+        if not spec_id:
+            show_info(self, "Select Specimen", "Select a specimen or grouped order from the worklist first.")
+            return
+        dlg = BatchPanelDialog(spec_id, self.user["name"], self)
+        if dlg.exec() == QDialog.Accepted:
+            self.refresh_all()
+            if self.selected_order_id:
+                self._load_inspector_order(self.selected_order_id, animate_from_center=True)
+
+    def _open_microscopy_form(self):
+        if not self.selected_order_id:
+            show_info(self, "Select Specimen", "Select a Urinalysis or Fecalysis order first.")
+            return
+        target_id = self.selected_order_id
+        conn = get_conn()
+        o = conn.execute("SELECT test_name, microscopy_json, specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
+        conn.close()
+        dlg = MicroscopyDialog(o["test_name"], o["microscopy_json"] or "", self)
+        if dlg.exec() == QDialog.Accepted:
+            raw_json, summary = dlg.export_payload()
+            conn = get_conn()
+            conn.execute("UPDATE orders SET microscopy_json = ? WHERE id = ?", (raw_json, target_id))
+            conn.commit()
+            conn.close()
+            self.in_result.setText(summary)
+            log_audit(self.user["name"], "MICROSCOPY_SAVED", o["specimen_id"], summary)
+            self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=False)
 
     def _advance_stage(self, stage: str):
         if not self.selected_order_id:
@@ -2383,8 +3052,8 @@ class MainWorkspace(QWidget):
         target_id = self.selected_order_id
         dlg = QDialog(self)
         dlg.setWindowTitle("Assign Specimen Storage Slot")
-        dlg.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(dlg)
+        dlg.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(dlg)
         l = QVBoxLayout(dlg)
         l.addWidget(QLabel("Storage Unit & Rack Slot:"))
         cmb_u = QComboBox()
@@ -2465,9 +3134,9 @@ class MainWorkspace(QWidget):
         verified_id = self.selected_order_id
         conn = get_conn()
         o = conn.execute("""
-            SELECT o.*, t.low_val, t.high_val, t.crit_low, t.crit_high, t.delta_pct
+            SELECT o.*, p.sex, p.dob
             FROM orders o
-            LEFT JOIN tests t ON o.test_name = t.test_name
+            JOIN patients p ON o.patient_id = p.id
             WHERE o.id = ?
         """, (verified_id,)).fetchone()
         if not o:
@@ -2482,19 +3151,21 @@ class MainWorkspace(QWidget):
             )
             return
 
+        lo, hi, clo, chi, ref_lbl, delta_pct = resolve_patient_interval(conn, o["test_name"], o["sex"], o["dob"])
+
         flag = "NORMAL"
         is_crit = 0
         try:
             v = float(val_str)
-            if o["crit_low"] is not None and v <= o["crit_low"]:
+            if clo is not None and v <= clo:
                 flag = "CRITICAL LOW"
                 is_crit = 1
-            elif o["crit_high"] is not None and v >= o["crit_high"]:
+            elif chi is not None and v >= chi:
                 flag = "CRITICAL HIGH"
                 is_crit = 1
-            elif o["low_val"] is not None and v < o["low_val"]:
+            elif lo is not None and v < lo:
                 flag = "LOW"
-            elif o["high_val"] is not None and v > o["high_val"]:
+            elif hi is not None and v > hi:
                 flag = "HIGH"
         except Exception:
             upper_v = val_str.upper()
@@ -2507,13 +3178,13 @@ class MainWorkspace(QWidget):
             WHERE patient_id = ? AND test_name = ? AND id != ? AND result_value IS NOT NULL AND result_value != ''
             ORDER BY id DESC LIMIT 1
         """, (o["patient_id"], o["test_name"], o["id"])).fetchone()
-        if prior and o["delta_pct"]:
+        if prior and delta_pct:
             try:
                 v_now = float(val_str)
                 v_old = float(prior["result_value"])
                 if v_old != 0:
                     pct_diff = abs((v_now - v_old) / v_old) * 100.0
-                    if pct_diff >= float(o["delta_pct"]):
+                    if pct_diff >= float(delta_pct):
                         delta_msg = f"{pct_diff:.0f}% shift vs prior ({v_old:g})"
                         if not ask_confirm(
                             self, "Delta Check Alert",
@@ -2529,8 +3200,8 @@ class MainWorkspace(QWidget):
         if is_crit:
             dlg = QDialog(self)
             dlg.setWindowTitle("Critical Value — Read-Back Log")
-            dlg.setStyleSheet(APP_QSS)
-            apply_dark_titlebar(dlg)
+            dlg.setStyleSheet(build_qss(CURRENT_THEME))
+            apply_window_titlebar_theme(dlg)
             dl = QVBoxLayout(dlg)
             warn = QLabel(f"CRITICAL VALUE: {o['test_name']} = {val_str} ({flag})\nRecord physician/nurse notified and read-back confirmation:")
             warn.setStyleSheet("color: #FB7185; font-weight: 700;")
@@ -2552,8 +3223,8 @@ class MainWorkspace(QWidget):
         if o["status"] in ("Verified", "Amended") and o["result_value"] != val_str:
             dlg_am = QDialog(self)
             dlg_am.setWindowTitle("Result Amendment Reason")
-            dlg_am.setStyleSheet(APP_QSS)
-            apply_dark_titlebar(dlg_am)
+            dlg_am.setStyleSheet(build_qss(CURRENT_THEME))
+            apply_window_titlebar_theme(dlg_am)
             al = QVBoxLayout(dlg_am)
             al.addWidget(QLabel(f"Amending verified result ({o['result_value']} -> {val_str}). Enter reason:"))
             in_am = QLineEdit()
@@ -2572,12 +3243,12 @@ class MainWorkspace(QWidget):
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         conn.execute("""
             UPDATE orders SET
-                result_value = ?, flag = ?, status = ?, notes = ?,
+                result_value = ?, flag = ?, status = ?, ref_range = ?, notes = ?,
                 verified_by = ?, verified_at = ?, amended_reason = ?,
                 panic_notified_to = ?, delta_flag = ?, critical_flag = ?
             WHERE id = ?
         """, (
-            val_str, flag, new_status, self.in_notes.text().strip(),
+            val_str, flag, new_status, ref_lbl, self.in_notes.text().strip(),
             self.user["name"], now, amend_reason,
             panic_notified, delta_msg, is_crit, verified_id
         ))
@@ -2595,8 +3266,8 @@ class MainWorkspace(QWidget):
         target_id = self.selected_order_id
         dlg = QDialog(self)
         dlg.setWindowTitle("Reject Specimen")
-        dlg.setStyleSheet(APP_QSS)
-        apply_dark_titlebar(dlg)
+        dlg.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(dlg)
         l = QVBoxLayout(dlg)
         l.addWidget(QLabel("Select Rejection Reason:"))
         cmb = QComboBox()
@@ -2707,7 +3378,7 @@ class MainWorkspace(QWidget):
 
         self.in_pt_name = QLineEdit(); self.in_pt_name.setPlaceholderText("Full Name (Last, First MI)")
         self.in_pt_mrn = QLineEdit(); self.in_pt_mrn.setPlaceholderText("MRN (auto-generated if blank)")
-        self.in_pt_dob = QLineEdit(); self.in_pt_dob.setPlaceholderText("DOB (YYYY-MM-DD) or Age")
+        self.in_pt_dob = QLineEdit(); self.in_pt_dob.setPlaceholderText("DOB (YYYY-MM-DD) or Age (e.g. 34y, 6m)")
         self.cmb_pt_sex = QComboBox(); self.cmb_pt_sex.addItems(["Female", "Male", "Other"])
         self.in_pt_contact = QLineEdit(); self.in_pt_contact.setPlaceholderText("Contact Number (Optional)")
         self.in_pt_md = QLineEdit(); self.in_pt_md.setPlaceholderText("Requesting Physician (e.g., Dr. Santos)")
@@ -2851,6 +3522,8 @@ class MainWorkspace(QWidget):
             return
 
         mrn = self.in_pt_mrn.text().strip() or f"MRN-{random.randint(100000, 999999)}"
+        dob_val = self.in_pt_dob.text().strip()
+        sex_val = self.cmb_pt_sex.currentText()
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         spec_id = f"MDL-{datetime.now().strftime('%y%m%d')}-{random.randint(1000, 9999)}"
 
@@ -2861,20 +3534,19 @@ class MainWorkspace(QWidget):
             pid = existing["id"]
             cur.execute(
                 "UPDATE patients SET full_name=?, dob=?, sex=?, contact=?, physician=? WHERE id=?",
-                (name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(),
-                 self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), pid)
+                (name, dob_val, sex_val, self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), pid)
             )
         else:
             cur.execute(
                 "INSERT INTO patients (mrn, full_name, dob, sex, contact, physician, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (mrn, name, self.in_pt_dob.text().strip(), self.cmb_pt_sex.currentText(),
-                 self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), now)
+                (mrn, name, dob_val, sex_val, self.in_pt_contact.text().strip(), self.in_pt_md.text().strip(), now)
             )
             pid = cur.lastrowid
 
         first_order_id = None
         for t_name in selected_tests:
             t_info = cur.execute("SELECT * FROM tests WHERE test_name = ?", (t_name,)).fetchone()
+            _, _, _, _, ref_lbl, _ = resolve_patient_interval(conn, t_name, sex_val, dob_val)
             cur.execute("""
                 INSERT INTO orders (
                     specimen_id, patient_id, test_name, department, priority, status,
@@ -2882,7 +3554,7 @@ class MainWorkspace(QWidget):
                 ) VALUES (?, ?, ?, ?, ?, 'Ordered', ?, ?, ?, ?, ?, ?)
             """, (
                 spec_id, pid, t_name, t_info["department"], self.cmb_req_priority.currentText(),
-                t_info["unit"], t_info["ref_range"], t_info["tube_type"],
+                t_info["unit"], ref_lbl, t_info["tube_type"],
                 self.user["name"], now, self.in_req_slot.text().strip()
             ))
             if first_order_id is None:
@@ -2929,7 +3601,7 @@ class MainWorkspace(QWidget):
 
         self.reg_name = QLineEdit(); self.reg_name.setPlaceholderText("Full Name (Last, First MI)")
         self.reg_mrn = QLineEdit(); self.reg_mrn.setPlaceholderText("MRN (auto-generated if blank)")
-        self.reg_dob = QLineEdit(); self.reg_dob.setPlaceholderText("YYYY-MM-DD or Age (e.g. 34y)")
+        self.reg_dob = QLineEdit(); self.reg_dob.setPlaceholderText("YYYY-MM-DD or Age (e.g. 34y, 6m)")
         self.reg_sex = QComboBox(); self.reg_sex.addItems(["Female", "Male", "Other"])
         self.reg_contact = QLineEdit(); self.reg_contact.setPlaceholderText("Phone / Mobile Number")
         self.reg_md = QLineEdit(); self.reg_md.setPlaceholderText("Attending / Requesting Physician")
@@ -3105,7 +3777,7 @@ class MainWorkspace(QWidget):
         banner.setObjectName("SurfaceCard")
         bl = QHBoxLayout(banner)
         info = QLabel("Pathologist Review Queue — Gaia Aubrey Manalo, MD (Critical values, amended results, blood smears, and cultures)")
-        info.setStyleSheet("color: #CBD5E1; font-weight: 600;")
+        info.setStyleSheet("font-weight: 600;")
         info.setWordWrap(True)
         bl.addWidget(info)
         lay.addWidget(banner)
@@ -3218,13 +3890,13 @@ class MainWorkspace(QWidget):
             self.lbl_qc_pill.setText(f"QC Lockout: {len(self.failed_qc_tests)} Assay(s)")
             self.lbl_qc_pill.setStyleSheet(
                 "background-color: rgba(244,63,94,0.18); border: 1px solid #F43F5E; "
-                "color: #FB7185; border-radius: 6px; padding: 3px 10px; font-weight: 600; font-size: 8.5pt;"
+                "color: #F43F5E; border-radius: 6px; padding: 3px 10px; font-weight: 600; font-size: 8.5pt;"
             )
         else:
             self.lbl_qc_pill.setText("QC: In Control")
             self.lbl_qc_pill.setStyleSheet(
-                "background-color: rgba(16,185,129,0.14); border: 1px solid #10B981; "
-                "color: #34D399; border-radius: 6px; padding: 3px 10px; font-weight: 600; font-size: 8.5pt;"
+                "background-color: rgba(16,185,129,0.16); border: 1px solid #10B981; "
+                "color: #10B981; border-radius: 6px; padding: 3px 10px; font-weight: 600; font-size: 8.5pt;"
             )
 
     def _log_qc_run(self):
@@ -3273,6 +3945,7 @@ class MainWorkspace(QWidget):
             )
 
     def refresh_qc(self):
+        t_style = THEMES[CURRENT_THEME]
         label = self.cmb_qc_target.currentText()
         conn = get_conn()
         target = conn.execute("SELECT * FROM qc_targets WHERE label = ?", (label,)).fetchone()
@@ -3285,7 +3958,7 @@ class MainWorkspace(QWidget):
             self.tbl_qc.setItem(i, 1, _make_item(r["label"]))
             self.tbl_qc.setItem(i, 2, _make_item(f"{r['measured']:g}"))
             self.tbl_qc.setItem(i, 3, _make_item(f"{r['z_score']:+.2f} SD"))
-            st_col = "#FB7185" if "FAIL" in r["westgard_status"] else ("#FBBF24" if "WARN" in r["westgard_status"] else "#34D399")
+            st_col = "#E11D48" if "FAIL" in r["westgard_status"] else ("#D97706" if "WARN" in r["westgard_status"] else "#059669")
             self.tbl_qc.setItem(i, 4, _make_item(r["westgard_status"], st_col))
             self.tbl_qc.setItem(i, 5, _make_item(r["operator"]))
 
@@ -3305,19 +3978,19 @@ class MainWorkspace(QWidget):
         if ordered:
             xs = [f"#{i+1}" for i in range(len(ordered))]
             ys = [r["measured"] for r in ordered]
-            ax.plot(xs, ys, color="#38BDF8", linewidth=1.8, zorder=3)
+            ax.plot(xs, ys, color="#0284C7", linewidth=1.8, zorder=3)
             for x, y, r in zip(xs, ys, ordered):
                 c = "#F43F5E" if "FAIL" in r["westgard_status"] else ("#F59E0B" if "WARN" in r["westgard_status"] else "#10B981")
                 ax.scatter([x], [y], color=c, s=55, zorder=4, edgecolors="#FFFFFF", linewidths=0.8)
 
         ax.set_title(f"Levey-Jennings Chart — {label}", fontsize=10, fontweight="bold")
         ax.set_ylabel(target["unit"] if target else "Value")
-        ax.grid(True, color="#1E293B", linestyle=":", linewidth=0.7)
+        ax.grid(True, color=t_style["chart_grid"], linestyle=":", linewidth=0.7)
         self.qc_canvas.fig.tight_layout()
         self.qc_canvas.draw()
 
     # --------------------------------------------------------------------------
-    # TAB 6: TEST CATALOG & REFERENCE RANGES
+    # TAB 6: TEST CATALOG & AGE/SEX REFERENCE RANGES
     # --------------------------------------------------------------------------
     def _build_catalog_tab(self) -> QWidget:
         w = QWidget()
@@ -3338,8 +4011,8 @@ class MainWorkspace(QWidget):
         ])
         self.cat_tube = QComboBox(); self.cat_tube.addItems(list(TUBE_COLORS.keys()))
         self.cat_unit = QLineEdit(); self.cat_unit.setPlaceholderText("Unit (e.g. mg/dL)")
-        self.cat_lo = QLineEdit(); self.cat_lo.setPlaceholderText("Normal Low")
-        self.cat_hi = QLineEdit(); self.cat_hi.setPlaceholderText("Normal High")
+        self.cat_lo = QLineEdit(); self.cat_lo.setPlaceholderText("Default Low")
+        self.cat_hi = QLineEdit(); self.cat_hi.setPlaceholderText("Default High")
         btn_add_t = QPushButton("Save Assay")
         btn_add_t.setObjectName("PrimaryBtn")
         btn_add_t.clicked.connect(self._save_catalog_test)
@@ -3356,7 +4029,7 @@ class MainWorkspace(QWidget):
         lay.addWidget(form)
 
         self.tbl_catalog = QTableWidget(0, 7)
-        self.tbl_catalog.setHorizontalHeaderLabels(["Test Name", "Department", "Unit", "Low", "High", "Critical Cutoffs", "Container"])
+        self.tbl_catalog.setHorizontalHeaderLabels(["Test Name", "Department", "Unit", "Default Low", "Default High", "Demographic Rules", "Container"])
         self.tbl_catalog.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_catalog.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.tbl_catalog.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -3405,7 +4078,7 @@ class MainWorkspace(QWidget):
         self.refresh_all()
 
     # --------------------------------------------------------------------------
-    # TAB 7 (ADMIN ONLY): REPORTS, STAFF ROSTER & AUDIT LOG
+    # TAB 7 (ADMIN ONLY): REPORTS, STAFF ROSTER, SHARED DB & AUDIT LOG
     # --------------------------------------------------------------------------
     def _build_admin_tab(self) -> QWidget:
         w = QWidget()
@@ -3420,9 +4093,9 @@ class MainWorkspace(QWidget):
         exp_card.setObjectName("SurfaceCard")
         el = QVBoxLayout(exp_card)
         el.setContentsMargins(16, 14, 16, 14)
-        el.setSpacing(10)
+        el.setSpacing(8)
 
-        lbl_exp = QLabel("Shift Handover & Data Exports")
+        lbl_exp = QLabel("Shift Handover, Backups & Multi-Workstation DB")
         lbl_exp.setObjectName("SectionHeader")
         el.addWidget(lbl_exp)
 
@@ -3447,35 +4120,53 @@ class MainWorkspace(QWidget):
         db_row.addWidget(btn_bak)
         el.addLayout(db_row)
 
+        lan_row = QHBoxLayout()
+        self.in_db_path = QLineEdit(get_db_path())
+        self.in_db_path.setReadOnly(True)
+        btn_lan = QPushButton("Link Shared LAN DB...")
+        btn_lan.setToolTip("Point this workstation to a shared network folder SQLite database (WAL sync enabled)")
+        btn_lan.clicked.connect(self._switch_shared_db)
+        lan_row.addWidget(self.in_db_path, 2)
+        lan_row.addWidget(btn_lan, 1)
+        el.addLayout(lan_row)
+
         left_col.addWidget(exp_card)
 
         st_card = QFrame()
         st_card.setObjectName("SurfaceCard")
         sl = QVBoxLayout(st_card)
         sl.setContentsMargins(16, 14, 16, 14)
-        sl.setSpacing(10)
+        sl.setSpacing(8)
 
-        lbl_st = QLabel("Authorized Staff Roster")
+        lbl_st = QLabel("Authorized Staff Roster, PRC Licenses & E-Signatures")
         lbl_st.setObjectName("SectionHeader")
         sl.addWidget(lbl_st)
 
-        add_r = QHBoxLayout()
-        self.st_pin = QLineEdit(); self.st_pin.setPlaceholderText("4-Digit PIN"); self.st_pin.setMaximumWidth(100)
+        add_r = QGridLayout()
+        self.st_pin = QLineEdit(); self.st_pin.setPlaceholderText("4-Digit PIN"); self.st_pin.setMaximumWidth(95)
         self.st_name = QLineEdit(); self.st_name.setPlaceholderText("Full Name & Credentials")
+        self.st_prc = QLineEdit(); self.st_prc.setPlaceholderText("PRC License #")
         self.st_role = QComboBox(); self.st_role.addItems(["Medical Technologist (RMT)", "Pathologist"])
-        btn_st = QPushButton("Save")
+        self.st_sig_path = ""
+        btn_sig = QPushButton("Attach PNG Sig")
+        btn_sig.clicked.connect(self._pick_staff_sig)
+        btn_st = QPushButton("Save Staff")
         btn_st.setObjectName("PrimaryBtn")
         btn_st.clicked.connect(self._save_staff)
-        add_r.addWidget(self.st_pin)
-        add_r.addWidget(self.st_name, 2)
-        add_r.addWidget(self.st_role, 1)
-        add_r.addWidget(btn_st)
+
+        add_r.addWidget(self.st_pin, 0, 0)
+        add_r.addWidget(self.st_name, 0, 1, 1, 2)
+        add_r.addWidget(self.st_prc, 1, 0)
+        add_r.addWidget(self.st_role, 1, 1)
+        add_r.addWidget(btn_sig, 1, 2)
+        add_r.addWidget(btn_st, 0, 3, 2, 1)
         sl.addLayout(add_r)
 
-        self.tbl_staff = QTableWidget(0, 3)
-        self.tbl_staff.setHorizontalHeaderLabels(["PIN", "Operator Name", "Role"])
+        self.tbl_staff = QTableWidget(0, 4)
+        self.tbl_staff.setHorizontalHeaderLabels(["PIN", "Operator Name", "Role", "PRC License"])
         self.tbl_staff.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.tbl_staff.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_staff.itemSelectionChanged.connect(self._on_staff_row_select)
         sl.addWidget(self.tbl_staff, 1)
 
         left_col.addWidget(st_card, 1)
@@ -3501,6 +4192,42 @@ class MainWorkspace(QWidget):
         lay.addWidget(aud_card, 1)
         return w
 
+    def _switch_shared_db(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Select or Create Shared Workstation Database (.db)",
+            get_db_path(), "SQLite Database (*.db)", options=QFileDialog.DontConfirmOverwrite
+        )
+        if not path:
+            return
+        APP_CONFIG["db_path"] = path
+        save_config(APP_CONFIG)
+        init_db()
+        self.in_db_path.setText(path)
+        self.refresh_all()
+        show_info(self, "Shared Database Linked", f"Connected to WAL-enabled database:\n{path}")
+
+    def _pick_staff_sig(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Select Transparent Signature Image", "", "Images (*.png *.jpg)")
+        if path:
+            self.st_sig_path = path
+            show_info(self, "Signature Attached", f"Selected signature file:\n{os.path.basename(path)}\n\nClick 'Save Staff' to apply.")
+
+    def _on_staff_row_select(self):
+        rows = self.tbl_staff.selectionModel().selectedRows()
+        if not rows:
+            return
+        r = rows[0].row()
+        pin = self.tbl_staff.item(r, 0).text()
+        conn = get_conn()
+        s = conn.execute("SELECT * FROM staff WHERE pin = ?", (pin,)).fetchone()
+        conn.close()
+        if s:
+            self.st_pin.setText(s["pin"])
+            self.st_name.setText(s["name"])
+            self.st_role.setCurrentText(s["role"])
+            self.st_prc.setText(s["prc_license"] or "")
+            self.st_sig_path = s["sig_path"] or ""
+
     def _export_shift_handover(self):
         shift = self.cmb_shift.currentText()
         path, _ = QFileDialog.getSaveFileName(self, "Save Shift Handover Report", f"Shift_Handover_{datetime.now().strftime('%Y%m%d')}.pdf", "PDF Files (*.pdf)")
@@ -3513,6 +4240,7 @@ class MainWorkspace(QWidget):
     def _save_staff(self):
         pin = self.st_pin.text().strip()
         name = self.st_name.text().strip()
+        prc = self.st_prc.text().strip()
         if len(pin) != 4 or not pin.isdigit() or not name:
             show_warn(self, "Invalid Staff Entry", "PIN must be 4 digits and Name cannot be empty.")
             return
@@ -3521,13 +4249,14 @@ class MainWorkspace(QWidget):
             return
         conn = get_conn()
         conn.execute("""
-            INSERT INTO staff (pin, name, role) VALUES (?, ?, ?)
-            ON CONFLICT(pin) DO UPDATE SET name=excluded.name, role=excluded.role
-        """, (pin, name, self.st_role.currentText()))
+            INSERT INTO staff (pin, name, role, prc_license, sig_path) VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(pin) DO UPDATE SET
+                name=excluded.name, role=excluded.role, prc_license=excluded.prc_license, sig_path=excluded.sig_path
+        """, (pin, name, self.st_role.currentText(), prc, self.st_sig_path))
         conn.commit()
         conn.close()
         log_audit(self.user["name"], "STAFF_UPDATED", "-", f"{name} (PIN {pin})")
-        self.st_pin.clear(); self.st_name.clear()
+        self.st_pin.clear(); self.st_name.clear(); self.st_prc.clear(); self.st_sig_path = ""
         self.refresh_all()
 
     def _export_csv(self):
@@ -3550,7 +4279,7 @@ class MainWorkspace(QWidget):
     def _backup_db(self):
         path, _ = QFileDialog.getSaveFileName(self, "Backup SQLite Database", f"monocytes_lis_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.db", "SQLite DB (*.db)")
         if path:
-            shutil.copy2(DB_NAME, path)
+            shutil.copy2(get_db_path(), path)
             log_audit(self.user["name"], "DB_BACKUP", "-", path)
             show_info(self, "Backup Complete", f"Database backed up to:\n{path}")
 
@@ -3577,35 +4306,46 @@ class MainWorkspace(QWidget):
 
         self.lbl_queue_counts.setText(f"Total: {tot}  |  Pending: {pend}  |  STAT: {stat}  |  Verified: {ver}")
 
-    def _compute_tat_str(self, r, now_dt: datetime) -> str:
+    def _compute_tat_info(self, r, now_dt: datetime):
+        """Returns (tat_label, is_warning, is_overdue) splitting Collection TAT and Analytical TAT."""
         if r["status"] in ("Verified", "Amended", "Rejected"):
-            return "Done"
-        if not r["ordered_at"]:
-            return "-"
+            return ("Done", False, False)
         try:
             odt = datetime.strptime(r["ordered_at"], "%Y-%m-%d %H:%M:%S")
-            mins = int((now_dt - odt).total_seconds() // 60)
-            sla = 60 if r["priority"] == "STAT" else 240
-            return f"{mins}m / {sla}m"
         except Exception:
-            return "-"
+            return ("-", False, False)
+
+        is_stat = (r["priority"] == "STAT")
+        if not r["collected_at"]:
+            coll_mins = int((now_dt - odt).total_seconds() // 60)
+            coll_sla = 15 if is_stat else 45
+            return (f"Coll: {coll_mins}m/{coll_sla}m", coll_mins >= coll_sla * 0.75, coll_mins > coll_sla)
+
+        try:
+            cdt = datetime.strptime(r["collected_at"], "%Y-%m-%d %H:%M:%S")
+            bench_mins = int((now_dt - cdt).total_seconds() // 60)
+            bench_sla = 45 if is_stat else 180
+            return (f"Lab: {bench_mins}m/{bench_sla}m", bench_mins >= bench_sla * 0.75, bench_mins > bench_sla)
+        except Exception:
+            return ("-", False, False)
 
     def _status_color(self, badge: str) -> str:
         if badge in ("HIGH", "CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL", "Critical Alert"):
-            return "#FB7185"
+            return "#E11D48"
         if badge == "LOW":
-            return "#FBBF24"
+            return "#D97706"
         if badge in ("NORMAL", "All Verified"):
-            return "#34D399"
+            return "#059669"
         if badge == "REJECTED":
-            return "#94A3B8"
-        return "#38BDF8"
+            return "#64748B"
+        return "#0284C7"
 
     def refresh_worklist(self):
         q = self.in_search.text().strip().lower()
         dept = self.cmb_dept_filter.currentText()
         st_f = self.cmb_status_filter.currentText()
         target_order_id = self.selected_order_id
+        t_style = THEMES[CURRENT_THEME]
 
         conn = get_conn()
         rows = conn.execute("""
@@ -3633,7 +4373,6 @@ class MainWorkspace(QWidget):
                 continue
             filtered.append(r)
 
-        # Group orders by specimen_id while preserving worklist priority/order
         groups = []
         group_map = {}
         for r in filtered:
@@ -3649,12 +4388,12 @@ class MainWorkspace(QWidget):
         item_to_select = None
 
         bold_font = QFont("Segoe UI", 9, QFont.Bold)
-        group_bg = QBrush(QColor("#10192D"))
+        group_bg = QBrush(QColor(t_style["group_row"]))
 
         for sid, items in groups:
             if len(items) == 1:
                 r = items[0]
-                tat_str = self._compute_tat_str(r, now_dt)
+                tat_str, tat_warn, tat_over = self._compute_tat_info(r, now_dt)
                 res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
                 badge = r["flag"] if r["flag"] else r["status"]
                 cols = [r["specimen_id"], r["full_name"], r["test_name"], r["department"], r["priority"], tat_str, res_txt, badge]
@@ -3663,13 +4402,16 @@ class MainWorkspace(QWidget):
                 for c_idx, txt in enumerate(cols):
                     node.setToolTip(c_idx, txt)
                 if r["priority"] == "STAT":
-                    node.setForeground(4, QBrush(QColor("#FB7185")))
+                    node.setForeground(4, QBrush(QColor("#E11D48")))
+                if tat_over:
+                    node.setForeground(5, QBrush(QColor("#E11D48")))
+                elif tat_warn:
+                    node.setForeground(5, QBrush(QColor("#D97706")))
                 node.setForeground(7, QBrush(QColor(self._status_color(badge))))
                 self.tbl_worklist.addTopLevelItem(node)
                 if r["id"] == target_order_id:
                     item_to_select = node
             else:
-                # Multi-test collapsible patient group
                 first = items[0]
                 depts = sorted({x["department"] for x in items})
                 dept_summary = depts[0] if len(depts) == 1 else f"Multi-Dept ({len(depts)})"
@@ -3687,8 +4429,8 @@ class MainWorkspace(QWidget):
                 else:
                     grp_status = first["status"]
 
-                active_tats = [self._compute_tat_str(x, now_dt) for x in items if self._compute_tat_str(x, now_dt) != "Done"]
-                tat_summary = active_tats[0] if active_tats else "Done"
+                tat_infos = [self._compute_tat_info(x, now_dt) for x in items if self._compute_tat_info(x, now_dt)[0] != "Done"]
+                tat_summary = tat_infos[0][0] if tat_infos else "Done"
                 tests_preview = ", ".join(x["test_name"] for x in items)
 
                 grp_cols = [
@@ -3709,14 +4451,14 @@ class MainWorkspace(QWidget):
                 parent_node.setFont(0, bold_font)
                 parent_node.setFont(1, bold_font)
                 if is_any_stat:
-                    parent_node.setForeground(4, QBrush(QColor("#FB7185")))
+                    parent_node.setForeground(4, QBrush(QColor("#E11D48")))
                 parent_node.setForeground(7, QBrush(QColor(self._status_color(grp_status))))
 
                 self.tbl_worklist.addTopLevelItem(parent_node)
                 parent_node.setExpanded(sid not in self.collapsed_specimens)
 
                 for r in sorted(items, key=lambda x: x["id"]):
-                    tat_str = self._compute_tat_str(r, now_dt)
+                    tat_str, tat_warn, tat_over = self._compute_tat_info(r, now_dt)
                     res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
                     badge = r["flag"] if r["flag"] else r["status"]
                     child_cols = [
@@ -3735,7 +4477,11 @@ class MainWorkspace(QWidget):
                         child.setToolTip(c_idx, txt)
                     child.setForeground(0, QBrush(QColor("#64748B")))
                     if r["priority"] == "STAT":
-                        child.setForeground(4, QBrush(QColor("#FB7185")))
+                        child.setForeground(4, QBrush(QColor("#E11D48")))
+                    if tat_over:
+                        child.setForeground(5, QBrush(QColor("#E11D48")))
+                    elif tat_warn:
+                        child.setForeground(5, QBrush(QColor("#D97706")))
                     child.setForeground(7, QBrush(QColor(self._status_color(badge))))
                     parent_node.addChild(child)
                     if r["id"] == target_order_id:
@@ -3752,6 +4498,10 @@ class MainWorkspace(QWidget):
         conn = get_conn()
         pts = conn.execute("SELECT id, mrn, full_name FROM patients ORDER BY full_name ASC").fetchall()
         tests = conn.execute("SELECT * FROM tests ORDER BY department, test_name").fetchall()
+        demo_counts = {
+            r["test_name"]: r["cnt"]
+            for r in conn.execute("SELECT test_name, COUNT(*) AS cnt FROM reference_ranges GROUP BY test_name").fetchall()
+        }
         conn.close()
 
         cur_pid = self.cmb_req_patient.currentData()
@@ -3772,10 +4522,10 @@ class MainWorkspace(QWidget):
                 row_w.setStyleSheet("""
                     QFrame {
                         background-color: transparent;
-                        border-bottom: 1px solid #161F33;
+                        border-bottom: 1px solid rgba(148, 163, 184, 0.22);
                     }
                     QFrame:hover {
-                        background-color: #11192D;
+                        background-color: rgba(56, 189, 248, 0.08);
                         border-radius: 6px;
                     }
                 """)
@@ -3788,7 +4538,7 @@ class MainWorkspace(QWidget):
                 rl.addWidget(cb, 1)
 
                 tube_lbl = QLabel(t["tube_type"] or "")
-                tube_lbl.setStyleSheet("color: #94A3B8; font-size: 8.5pt; border: none; background: transparent;")
+                tube_lbl.setObjectName("MutedLabel")
                 rl.addWidget(tube_lbl)
 
                 self.chk_list_layout.addWidget(row_w)
@@ -3804,8 +4554,9 @@ class MainWorkspace(QWidget):
             self.tbl_catalog.setItem(i, 2, _make_item(t["unit"] or "-"))
             self.tbl_catalog.setItem(i, 3, _make_item(str(t["low_val"]) if t["low_val"] is not None else "-"))
             self.tbl_catalog.setItem(i, 4, _make_item(str(t["high_val"]) if t["high_val"] is not None else "-"))
-            crit = f"<{t['crit_low']} or >{t['crit_high']}" if (t["crit_low"] is not None or t["crit_high"] is not None) else "-"
-            self.tbl_catalog.setItem(i, 5, _make_item(crit))
+            dc = demo_counts.get(t["test_name"], 0)
+            rule_txt = f"{dc} Age/Sex Rule(s)" if dc else "Standard Adult"
+            self.tbl_catalog.setItem(i, 5, _make_item(rule_txt, "#0284C7" if dc else None))
             self.tbl_catalog.setItem(i, 6, _make_item(t["tube_type"] or "-"))
         self.tbl_catalog.resizeRowsToContents()
 
@@ -3836,7 +4587,7 @@ class MainWorkspace(QWidget):
             self.tbl_path.setItem(i, 4, _make_item(r["result_value"] or "Pending"))
             self.tbl_path.setItem(i, 5, _make_item(r["flag"] or r["status"]))
             cs = f"Signed ({r['pathologist_signed_at']})" if r["pathologist_signed_by"] else "Awaiting MD Co-Sign"
-            cs_col = "#34D399" if r["pathologist_signed_by"] else "#FBBF24"
+            cs_col = "#059669" if r["pathologist_signed_by"] else "#D97706"
             self.tbl_path.setItem(i, 6, _make_item(cs, cs_col))
         self.tbl_path.resizeRowsToContents()
 
@@ -3885,6 +4636,7 @@ class MainWorkspace(QWidget):
             self.tbl_staff.setItem(i, 0, _make_item(s["pin"]))
             self.tbl_staff.setItem(i, 1, _make_item(s["name"]))
             self.tbl_staff.setItem(i, 2, _make_item(s["role"]))
+            self.tbl_staff.setItem(i, 3, _make_item(s["prc_license"] or "-"))
 
         self.tbl_audit.setRowCount(len(audits))
         for i, a in enumerate(audits):
@@ -3906,15 +4658,28 @@ class MonocytesLisApp(QMainWindow):
         self.setWindowTitle(APP_TITLE)
         self.resize(1380, 860)
         self.setMinimumSize(1120, 720)
-        apply_dark_titlebar(self)
+        apply_window_titlebar_theme(self)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
         self.login_gate = StaffLoginScreen(self)
         self.login_gate.authenticated.connect(self._on_authenticated)
+        self.login_gate.theme_toggled.connect(self._toggle_theme)
         self.stack.addWidget(self.login_gate)
         self.workspace = None
+
+    def _toggle_theme(self):
+        global CURRENT_THEME
+        CURRENT_THEME = "light" if CURRENT_THEME == "dark" else "dark"
+        APP_CONFIG["theme"] = CURRENT_THEME
+        save_config(APP_CONFIG)
+
+        QApplication.instance().setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
+        self.login_gate.apply_theme()
+        if self.workspace is not None:
+            self.workspace.on_theme_changed()
 
     def _on_authenticated(self, user: dict):
         if self.workspace is not None:
@@ -3924,6 +4689,7 @@ class MonocytesLisApp(QMainWindow):
 
         self.workspace = MainWorkspace(user, self)
         self.workspace.lock_requested.connect(self._on_lock)
+        self.workspace.theme_toggled.connect(self._toggle_theme)
         self.stack.addWidget(self.workspace)
         self.stack.setCurrentWidget(self.workspace)
 
@@ -3936,12 +4702,16 @@ class MonocytesLisApp(QMainWindow):
         self.login_gate.reset_gate()
         self.stack.setCurrentWidget(self.login_gate)
 
+    def closeEvent(self, event):
+        perform_daily_backup()
+        super().closeEvent(event)
+
 
 def main():
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    app.setStyleSheet(APP_QSS)
+    app.setStyleSheet(build_qss(CURRENT_THEME))
 
     init_db()
     win = MonocytesLisApp()
