@@ -7,7 +7,7 @@ import random
 import shutil
 import sqlite3
 import hashlib
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 if sys.platform == "win32":
     import ctypes
@@ -41,6 +41,34 @@ CONFIG_FILE = "lis_config.json"
 ADMIN_MODE_PIN = "0000"
 
 CURRENT_THEME = "dark"
+
+SAMPLE_PATIENT_NAMES = [
+    "Andrea Rei G. Naria",
+    "Angela Lyka Z. Go Hee",
+    "Antherese C. Palacios",
+    "Arianne Jhanne V. Cardinal",
+    "Avegail L. Gayoso",
+    "Christian Vien V. Napiza",
+    "Christine Joy Chan",
+    "Christine Mae S. Tramado",
+    "Eloisa T. Lanaria",
+    "Jasmine Cyrile B. Alave",
+    "Jasmine S. Mahilum",
+    "Jen Kaye Marie B. Bogtae",
+    "Jhelaicka Masheil D. Hermitaño",
+    "Josef Raphael S. Tiongson",
+    "Justin Jake P. Vargas",
+    "Rizza May S. Cambronero",
+    "Samantha Angel Sotto",
+    "Shaira Lois C. Guardiana",
+    "Shane Louisse B. Padrones",
+    "Shane Rose L. Jordan",
+    "Sherdounie A. Boboli",
+    "Sofiah R. Canto",
+    "Tashana C. Gallego",
+    "Vincess Rem C. Abong",
+    "Zacci Nicole S. Sarmiento",
+]
 
 
 def load_config() -> dict:
@@ -888,6 +916,240 @@ def _make_item(text: str, color_hex: str = None, align=None) -> QTableWidgetItem
     return item
 
 
+def seed_sample_clinical_cases(operator_name: str) -> dict:
+    """Seeds realistic clinical cases, serial trends, microscopy, antibiogram, pending STATs, and 12-day QC."""
+    conn = get_conn()
+    cur = conn.cursor()
+    now_dt = datetime.now()
+    fmt = "%Y-%m-%d %H:%M:%S"
+
+    def _get_or_create_patient(idx: int, dob: str, sex: str, contact: str, physician: str) -> int:
+        full_name = SAMPLE_PATIENT_NAMES[idx]
+        mrn = f"MONO-{1001 + idx:04d}"
+        row = cur.execute("SELECT id FROM patients WHERE mrn = ?", (mrn,)).fetchone()
+        if row:
+            cur.execute(
+                "UPDATE patients SET full_name=?, dob=?, sex=?, contact=?, physician=? WHERE id=?",
+                (full_name, dob, sex, contact, physician, row["id"])
+            )
+            return row["id"]
+        cur.execute(
+            "INSERT INTO patients (mrn, full_name, dob, sex, contact, physician, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (mrn, full_name, dob, sex, contact, physician, (now_dt - timedelta(days=5)).strftime(fmt))
+        )
+        return cur.lastrowid
+
+    def _insert_order(
+        spec_id: str, pid: int, test_name: str, priority: str = "Routine",
+        status: str = "Ordered", result_val: str = None, flag: str = None,
+        notes: str = "", ordered_ago_min: int = 90, collected_ago_min=None,
+        verified_ago_min=None, panic_notified: str = "", delta_flag: str = "",
+        crit_flag: int = 0, slot: str = "Rack A1", path_note: str = "",
+        path_signed_by: str = "", path_signed_ago_min=None,
+        abg_json: str = None, diff_json: str = None, mic_json: str = None
+    ):
+        t_row = cur.execute("SELECT * FROM tests WHERE test_name = ?", (test_name,)).fetchone()
+        p_row = cur.execute("SELECT sex, dob FROM patients WHERE id = ?", (pid,)).fetchone()
+        _, _, _, _, ref_lbl, _ = resolve_patient_interval(conn, test_name, p_row["sex"], p_row["dob"])
+
+        ord_at = (now_dt - timedelta(minutes=ordered_ago_min)).strftime(fmt)
+        coll_at = (now_dt - timedelta(minutes=collected_ago_min)).strftime(fmt) if collected_ago_min is not None else None
+        ver_at = (now_dt - timedelta(minutes=verified_ago_min)).strftime(fmt) if verified_ago_min is not None else None
+        ps_at = (now_dt - timedelta(minutes=path_signed_ago_min)).strftime(fmt) if path_signed_ago_min is not None else None
+
+        cur.execute("""
+            INSERT INTO orders (
+                specimen_id, patient_id, test_name, department, priority, status,
+                result_value, flag, unit, ref_range, tube_type, notes,
+                ordered_by, ordered_at, collected_at, verified_by, verified_at,
+                panic_notified_to, delta_flag, critical_flag, storage_slot,
+                pathologist_note, pathologist_signed_by, pathologist_signed_at,
+                antibiogram_json, diff_json, microscopy_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            spec_id, pid, test_name, t_row["department"], priority, status,
+            result_val, flag, t_row["unit"], ref_lbl, t_row["tube_type"], notes,
+            operator_name, ord_at, coll_at,
+            operator_name if ver_at else None, ver_at,
+            panic_notified, delta_flag, crit_flag, slot,
+            path_note, path_signed_by, ps_at,
+            abg_json, diff_json, mic_json
+        ))
+
+    # 1. Critical Value Read-Back Case (Potassium = 6.5 mmol/L)
+    p_crit = _get_or_create_patient(0, "1984-03-14", "Female", "0917-555-0101", "Dr. Marco Reyes")
+    _insert_order(
+        "MDL-261125-9001", p_crit, "Potassium (K+)", priority="STAT", status="Verified",
+        result_val="6.5", flag="CRITICAL HIGH",
+        notes="Repeat run confirmed hyperkalemia; non-hemolyzed specimen.",
+        ordered_ago_min=110, collected_ago_min=95, verified_ago_min=42,
+        panic_notified="Dr. Marco Reyes (ER) — Read-back verified",
+        crit_flag=1, slot="Fridge A (2-8°C) (Rack 1 - Slot A2)"
+    )
+
+    # 2. Full CBC + PBS Smear Review for Pathologist Co-Sign
+    p_cbc = _get_or_create_patient(1, "1996-08-22", "Female", "0917-555-0102", "Dr. Elena Lim")
+    cbc_spec = "MDL-261125-9002"
+    cbc_vals = [
+        ("White Blood Cell Count (WBC)", "15.8", "HIGH", "Marked leukocytosis"),
+        ("Red Blood Cell Count (RBC)", "3.65", "LOW", ""),
+        ("Hemoglobin (Hgb)", "9.8", "LOW", "Moderate anemia"),
+        ("Hematocrit (Hct)", "30.2", "LOW", ""),
+        ("MCV", "82.7", "NORMAL", ""),
+        ("MCH", "26.8", "LOW", ""),
+        ("MCHC", "32.4", "NORMAL", ""),
+        ("Platelet Count (PLT)", "118", "LOW", "Mild thrombocytopenia"),
+    ]
+    for t_nm, r_val, flg, n_txt in cbc_vals:
+        _insert_order(
+            cbc_spec, p_cbc, t_nm, priority="Urgent", status="Verified",
+            result_val=r_val, flag=flg, notes=n_txt,
+            ordered_ago_min=180, collected_ago_min=165, verified_ago_min=75,
+            slot="Hematology Rack 1 (Rack 1 - Slot B1)"
+        )
+    diff_payload = json.dumps({
+        "counts": {"Neutrophils": 78, "Lymphocytes": 14, "Monocytes": 6, "Eosinophils": 1, "Basophils": 1, "nRBC": 2},
+        "morphology": "Neutrophilic leukocytosis with toxic granulation (+2) and Dohle bodies; mild anisocytosis."
+    })
+    _insert_order(
+        cbc_spec, p_cbc, "Peripheral Blood Smear (PBS)", priority="Urgent", status="Verified",
+        result_val="Neut:78% Lymph:14% Mono:6% Eos:1% Baso:1% nRBC:2/100", flag="ABNORMAL",
+        notes="Neutrophilic leukocytosis with toxic granulation (+2) and Dohle bodies; mild anisocytosis.",
+        ordered_ago_min=180, collected_ago_min=165, verified_ago_min=70,
+        diff_json=diff_payload, slot="Hematology Rack 1 (Rack 1 - Slot B1)"
+    )
+
+    # 3. Dengue Workup with Serial Trend History (Day -3, Day -2, Today)
+    p_dengue = _get_or_create_patient(2, "2012-06-11", "Female", "0918-555-0103", "Dr. Paolo Cruz")
+    _insert_order(
+        "MDL-261122-3011", p_dengue, "Platelet Count (PLT)", priority="Routine", status="Verified",
+        result_val="142", flag="LOW", notes="Day 2 fever serial platelet check",
+        ordered_ago_min=4320, collected_ago_min=4300, verified_ago_min=4240
+    )
+    _insert_order(
+        "MDL-261123-4012", p_dengue, "Platelet Count (PLT)", priority="Urgent", status="Verified",
+        result_val="84", flag="LOW", notes="Day 3 fever serial platelet check",
+        ordered_ago_min=2880, collected_ago_min=2860, verified_ago_min=2800
+    )
+    dengue_today_spec = "MDL-261125-9003"
+    _insert_order(
+        dengue_today_spec, p_dengue, "Dengue NS1 Antigen", priority="STAT", status="Verified",
+        result_val="REACTIVE", flag="ABNORMAL", notes="NS1 positive on Day 4 illness",
+        ordered_ago_min=140, collected_ago_min=125, verified_ago_min=55,
+        slot="Serology Rack 1 (Rack 1 - Slot C1)"
+    )
+    _insert_order(
+        dengue_today_spec, p_dengue, "Platelet Count (PLT)", priority="STAT", status="Verified",
+        result_val="48", flag="LOW", notes="Downward serial trend; close monitoring",
+        ordered_ago_min=140, collected_ago_min=125, verified_ago_min=50,
+        delta_flag="43% shift vs prior (84)", slot="Hematology Rack 1 (Rack 1 - Slot B2)"
+    )
+    _insert_order(
+        dengue_today_spec, p_dengue, "Hematocrit (Hct)", priority="STAT", status="Verified",
+        result_val="43.8", flag="NORMAL", notes="Serial Hct baseline",
+        ordered_ago_min=140, collected_ago_min=125, verified_ago_min=50,
+        slot="Hematology Rack 1 (Rack 1 - Slot B2)"
+    )
+
+    # 4. Culture & Antibiogram (Urine C&S — E. coli)
+    p_abx = _get_or_create_patient(3, "1990-11-05", "Male", "0919-555-0104", "Dr. Hannah Tan")
+    abg_payload = json.dumps({
+        "organism": "Escherichia coli",
+        "colony": "> 100,000 CFU/mL Pure Growth (Midstream Urine)",
+        "panel": {
+            "Amoxicillin-Clavulanate": "S (Susceptible)",
+            "Ceftriaxone": "S (Susceptible)",
+            "Ciprofloxacin": "R (Resistant)",
+            "Nitrofurantoin": "S (Susceptible)",
+            "Trimethoprim-Sulfamethoxazole": "R (Resistant)",
+        }
+    })
+    _insert_order(
+        "MDL-261125-9004", p_abx, "Culture & Sensitivity (C&S)", priority="Routine", status="Verified",
+        result_val="Escherichia coli (5 Abx)", flag="ABNORMAL",
+        notes="Extended beta-lactamase negative; susceptible to Nitrofurantoin & Ceftriaxone.",
+        ordered_ago_min=1440, collected_ago_min=1420, verified_ago_min=95,
+        abg_json=abg_payload, slot="Microbiology Incubator 1 (Slot M4)"
+    )
+
+    # 5. Urinalysis & Fecalysis Microscopy Case
+    p_mic = _get_or_create_patient(4, "2001-01-19", "Female", "0920-555-0105", "Dr. Carlo Mendoza")
+    ua_payload = json.dumps({
+        "Color": "Dark Yellow", "Transparency": "Slightly Turbid", "Specific Gravity": "1.020",
+        "Reaction (pH)": "6.0", "Protein (Albumin)": "Trace", "Glucose (Sugar)": "Negative",
+        "Ketones": "Negative", "Blood / Hemoglobin": "Negative",
+        "Bilirubin / Urobilinogen": "Negative / Normal", "Nitrite / Leukocyte Est.": "Nitrite Neg / LE Pos",
+        "Pus Cells (WBC / hpf)": "10 - 20 /hpf", "Red Blood Cells (RBC / hpf)": "1 - 3 /hpf",
+        "Epithelial Cells": "Few", "Bacteria": "Moderate", "Casts & Crystals": "None Seen"
+    })
+    fa_payload = json.dumps({
+        "Color": "Brown", "Consistency": "Formed", "Mucus": "Absent", "Occult Blood": "Negative",
+        "Pus Cells (WBC / hpf)": "0 - 1 /hpf", "Red Blood Cells (RBC / hpf)": "None Seen",
+        "Fat Globules / Starch": "Few", "Ova & Parasites (NOPS)": "No Ova or Parasites Seen (NOPS)"
+    })
+    _insert_order(
+        "MDL-261125-9005", p_mic, "Urinalysis (Complete)", priority="Routine", status="Verified",
+        result_val="Dark Yellow / Slightly Turbid / WBC:10 - 20 /hpf", flag="ABNORMAL",
+        notes="Moderate bacteria with pyuria; correlate clinically for UTI.",
+        ordered_ago_min=210, collected_ago_min=195, verified_ago_min=85,
+        mic_json=ua_payload, slot="Microscopy Bench 1 (Slot U1)"
+    )
+    _insert_order(
+        "MDL-261125-9006", p_mic, "Fecalysis (Routine)", priority="Routine", status="Verified",
+        result_val="Brown / Formed / No Ova or Parasites Seen (NOPS)", flag="NORMAL",
+        notes="No ova, cysts, or trophozoites seen.",
+        ordered_ago_min=210, collected_ago_min=195, verified_ago_min=80,
+        mic_json=fa_payload, slot="Microscopy Bench 1 (Slot F1)"
+    )
+
+    # 6. Pending STAT Orders (Uncollected & In-Process)
+    p_stat1 = _get_or_create_patient(5, "1968-09-30", "Male", "0921-555-0106", "Dr. Marco Reyes")
+    _insert_order(
+        "MDL-261125-9007", p_stat1, "Troponin I (hs-cTnI)", priority="STAT", status="In-Process",
+        notes="Chest pain STAT draw; on analyzer.",
+        ordered_ago_min=48, collected_ago_min=36, slot="Chemistry Rack 2 (Rack 2 - Slot A1)"
+    )
+    p_stat2 = _get_or_create_patient(6, "1999-04-12", "Male", "0922-555-0107", "Dr. Elena Lim")
+    _insert_order(
+        "MDL-261125-9008", p_stat2, "Fasting Blood Glucose (FBS)", priority="STAT", status="Ordered",
+        notes="Awaiting phlebotomy collection.",
+        ordered_ago_min=24, collected_ago_min=None, slot="Phlebotomy Tray 1"
+    )
+
+    # Ensure remaining classmates (indices 7..24) are registered as patients for easy ordering/lookup
+    for idx in range(7, len(SAMPLE_PATIENT_NAMES)):
+        sex_opt = "Male" if idx in (13, 14) else "Female"
+        dob_opt = f"{1998 + (idx % 7)}-0{(idx % 8) + 1}-1{(idx % 8) + 1}"
+        _get_or_create_patient(
+            idx, dob_opt, sex_opt, f"0917-555-{1000 + idx:04d}",
+            "Dr. Elena Lim" if idx % 2 == 0 else "Dr. Marco Reyes"
+        )
+
+    # 7. 12 Days of Levey-Jennings QC Points (Hemoglobin Level 1: Mean=13.8, SD=0.35)
+    qc_label = "Hemoglobin (Hgb) | Level 1 (Normal)"
+    qc_mean = 13.8
+    qc_sd = 0.35
+    qc_offsets = [-0.15, 0.12, -0.22, 0.25, -0.08, 0.18, -0.30, 0.05, 0.28, -0.18, 0.10, -0.12]
+    for day_idx, z_off in enumerate(qc_offsets):
+        run_dt = (now_dt - timedelta(days=11 - day_idx, hours=2)).strftime(fmt)
+        measured = round(qc_mean + z_off * qc_sd, 2)
+        z_val = round((measured - qc_mean) / qc_sd, 2)
+        w_stat = "FAIL (1-3s Violation)" if abs(z_val) > 3.0 else ("WARN (1-2s Warning)" if abs(z_val) > 2.0 else "PASS (In Control)")
+        cur.execute("""
+            INSERT INTO qc_logs (label, measured, z_score, westgard_status, operator, logged_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (qc_label, measured, z_val, w_stat, operator_name, run_dt))
+
+    conn.commit()
+    conn.close()
+    log_audit(operator_name, "SAMPLE_CASES_SEEDED", "-", "Seeded clinical cases, serial trends, microscopy, antibiogram, STATs & 12-day QC")
+    return {
+        "patients_total": len(SAMPLE_PATIENT_NAMES),
+        "qc_points": len(qc_offsets),
+        "specimens_seeded": 8,
+    }
+
+
 # ==============================================================================
 # CLINICAL VISUAL INDICATORS (REFERENCE RANGE GAUGE, COLLECTION TUBE, CHARTS)
 # ==============================================================================
@@ -926,6 +1188,7 @@ class VectorRangeGauge(QWidget):
             "CRITICAL HIGH": "#F43F5E",
             "ABNORMAL": "#F43F5E",
             "REJECTED": "#64748B",
+            "CANCELLED": "#64748B",
         }
         self.flag_color = QColor(color_map.get(self.flag_text, "#0284C7"))
 
@@ -1132,6 +1395,253 @@ class AdminPinDialog(QDialog):
 
 
 # ==============================================================================
+# AGE / SEX REFERENCE RANGE EDITOR DIALOG
+# ==============================================================================
+
+class ReferenceRangeEditorDialog(QDialog):
+    """Editor for age- and sex-specific clinical reference intervals per assay."""
+
+    def __init__(self, test_name: str, operator_name: str, parent=None):
+        super().__init__(parent)
+        self.test_name = test_name
+        self.operator_name = operator_name
+        self.editing_rule_id = None
+        self.setWindowTitle(f"Age & Sex Reference Ranges — {test_name}")
+        self.resize(840, 500)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(self)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(10)
+
+        hdr = QLabel(f"Demographic Reference Rules: {test_name}")
+        hdr.setObjectName("SectionHeader")
+        lay.addWidget(hdr)
+
+        sub = QLabel("Configure age brackets (in years, e.g. 0 to 14.99 for pediatrics) and sex-specific limits.")
+        sub.setObjectName("MutedLabel")
+        lay.addWidget(sub)
+
+        form_card = QFrame()
+        form_card.setObjectName("SurfaceCard")
+        fg = QGridLayout(form_card)
+        fg.setContentsMargins(12, 10, 12, 10)
+        fg.setSpacing(8)
+
+        self.cmb_sex = QComboBox()
+        self.cmb_sex.addItems(["Female", "Male", "All"])
+
+        self.in_min_age = QLineEdit("0")
+        self.in_min_age.setPlaceholderText("Min Age (yrs)")
+
+        self.in_max_age = QLineEdit("150")
+        self.in_max_age.setPlaceholderText("Max Age (yrs)")
+
+        self.in_low = QLineEdit()
+        self.in_low.setPlaceholderText("Low (e.g. 12.0)")
+
+        self.in_high = QLineEdit()
+        self.in_high.setPlaceholderText("High (e.g. 15.5)")
+
+        self.in_crit_low = QLineEdit()
+        self.in_crit_low.setPlaceholderText("Crit Low (opt)")
+
+        self.in_crit_high = QLineEdit()
+        self.in_crit_high.setPlaceholderText("Crit High (opt)")
+
+        self.in_label = QLineEdit()
+        self.in_label.setPlaceholderText("Display Label (e.g. 12.0 - 15.5 Adult F)")
+
+        btn_save_rule = QPushButton("Save Rule")
+        btn_save_rule.setObjectName("SuccessBtn")
+        btn_save_rule.clicked.connect(self._save_rule)
+
+        btn_new_rule = QPushButton("Clear Form")
+        btn_new_rule.clicked.connect(self._clear_form)
+
+        btn_del_rule = QPushButton("Delete Selected")
+        btn_del_rule.setObjectName("DangerBtn")
+        btn_del_rule.clicked.connect(self._delete_rule)
+
+        fg.addWidget(QLabel("Sex:"), 0, 0)
+        fg.addWidget(self.cmb_sex, 0, 1)
+        fg.addWidget(QLabel("Min Age (yrs):"), 0, 2)
+        fg.addWidget(self.in_min_age, 0, 3)
+        fg.addWidget(QLabel("Max Age (yrs):"), 0, 4)
+        fg.addWidget(self.in_max_age, 0, 5)
+
+        fg.addWidget(QLabel("Low:"), 1, 0)
+        fg.addWidget(self.in_low, 1, 1)
+        fg.addWidget(QLabel("High:"), 1, 2)
+        fg.addWidget(self.in_high, 1, 3)
+        fg.addWidget(QLabel("Ref Label:"), 1, 4)
+        fg.addWidget(self.in_label, 1, 5)
+
+        fg.addWidget(QLabel("Crit Low:"), 2, 0)
+        fg.addWidget(self.in_crit_low, 2, 1)
+        fg.addWidget(QLabel("Crit High:"), 2, 2)
+        fg.addWidget(self.in_crit_high, 2, 3)
+
+        act_sub = QHBoxLayout()
+        act_sub.addWidget(btn_save_rule)
+        act_sub.addWidget(btn_new_rule)
+        act_sub.addWidget(btn_del_rule)
+        fg.addLayout(act_sub, 2, 4, 1, 2)
+
+        lay.addWidget(form_card)
+
+        self.tbl_rules = QTableWidget(0, 8)
+        self.tbl_rules.setHorizontalHeaderLabels([
+            "ID", "Sex", "Min Age", "Max Age", "Low", "High", "Crit Low / High", "Ref Label"
+        ])
+        self.tbl_rules.setColumnHidden(0, True)
+        self.tbl_rules.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.tbl_rules.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.tbl_rules.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.tbl_rules.setAlternatingRowColors(True)
+        self.tbl_rules.itemSelectionChanged.connect(self._on_row_select)
+        lay.addWidget(self.tbl_rules, 1)
+
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.accept)
+        lay.addWidget(btn_close, 0, Qt.AlignRight)
+
+        self._load_rules()
+
+    def _load_rules(self):
+        conn = get_conn()
+        rows = conn.execute("""
+            SELECT * FROM reference_ranges
+            WHERE test_name = ?
+            ORDER BY sex ASC, min_age_years ASC
+        """, (self.test_name,)).fetchall()
+        conn.close()
+
+        self.tbl_rules.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.tbl_rules.setItem(i, 0, _make_item(str(r["id"])))
+            self.tbl_rules.setItem(i, 1, _make_item(r["sex"]))
+            self.tbl_rules.setItem(i, 2, _make_item(f"{r['min_age_years']:g}"))
+            self.tbl_rules.setItem(i, 3, _make_item(f"{r['max_age_years']:g}"))
+            self.tbl_rules.setItem(i, 4, _make_item(f"{r['low_val']:g}" if r["low_val"] is not None else "-"))
+            self.tbl_rules.setItem(i, 5, _make_item(f"{r['high_val']:g}" if r["high_val"] is not None else "-"))
+            clo = f"{r['crit_low']:g}" if r["crit_low"] is not None else "-"
+            chi = f"{r['crit_high']:g}" if r["crit_high"] is not None else "-"
+            self.tbl_rules.setItem(i, 6, _make_item(f"{clo} / {chi}"))
+            self.tbl_rules.setItem(i, 7, _make_item(r["ref_label"] or "-"))
+        self.tbl_rules.resizeRowsToContents()
+
+    def _clear_form(self):
+        self.editing_rule_id = None
+        self.cmb_sex.setCurrentIndex(0)
+        self.in_min_age.setText("0")
+        self.in_max_age.setText("150")
+        self.in_low.clear()
+        self.in_high.clear()
+        self.in_crit_low.clear()
+        self.in_crit_high.clear()
+        self.in_label.clear()
+        self.tbl_rules.clearSelection()
+
+    def _on_row_select(self):
+        rows = self.tbl_rules.selectionModel().selectedRows()
+        if not rows:
+            return
+        rid = int(self.tbl_rules.item(rows[0].row(), 0).text())
+        conn = get_conn()
+        r = conn.execute("SELECT * FROM reference_ranges WHERE id = ?", (rid,)).fetchone()
+        conn.close()
+        if not r:
+            return
+        self.editing_rule_id = rid
+        self.cmb_sex.setCurrentText(r["sex"])
+        self.in_min_age.setText(f"{r['min_age_years']:g}")
+        self.in_max_age.setText(f"{r['max_age_years']:g}")
+        self.in_low.setText(f"{r['low_val']:g}" if r["low_val"] is not None else "")
+        self.in_high.setText(f"{r['high_val']:g}" if r["high_val"] is not None else "")
+        self.in_crit_low.setText(f"{r['crit_low']:g}" if r["crit_low"] is not None else "")
+        self.in_crit_high.setText(f"{r['crit_high']:g}" if r["crit_high"] is not None else "")
+        self.in_label.setText(r["ref_label"] or "")
+
+    @staticmethod
+    def _opt_float(widget: QLineEdit):
+        txt = widget.text().strip()
+        if not txt:
+            return None
+        return float(txt)
+
+    def _save_rule(self):
+        try:
+            min_age = float(self.in_min_age.text().strip() or "0")
+            max_age = float(self.in_max_age.text().strip() or "150")
+            lo = self._opt_float(self.in_low)
+            hi = self._opt_float(self.in_high)
+            clo = self._opt_float(self.in_crit_low)
+            chi = self._opt_float(self.in_crit_high)
+        except Exception:
+            show_warn(self, "Invalid Input", "Ages and limits must be valid numbers.")
+            return
+
+        if max_age < min_age:
+            show_warn(self, "Invalid Age Range", "Max Age must be greater than or equal to Min Age.")
+            return
+
+        sex = self.cmb_sex.currentText()
+        label = self.in_label.text().strip()
+        if not label:
+            if lo is not None and hi is not None:
+                label = f"{lo:g} - {hi:g} ({sex})"
+            else:
+                label = f"Ref ({sex}, {min_age:g}-{max_age:g}y)"
+
+        conn = get_conn()
+        try:
+            if self.editing_rule_id:
+                conn.execute("""
+                    UPDATE reference_ranges
+                    SET sex=?, min_age_years=?, max_age_years=?, low_val=?, high_val=?, crit_low=?, crit_high=?, ref_label=?
+                    WHERE id=?
+                """, (sex, min_age, max_age, lo, hi, clo, chi, label, self.editing_rule_id))
+            else:
+                conn.execute("""
+                    INSERT INTO reference_ranges
+                    (test_name, sex, min_age_years, max_age_years, low_val, high_val, crit_low, crit_high, ref_label)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(test_name, sex, min_age_years, max_age_years) DO UPDATE SET
+                        low_val=excluded.low_val, high_val=excluded.high_val,
+                        crit_low=excluded.crit_low, crit_high=excluded.crit_high,
+                        ref_label=excluded.ref_label
+                """, (self.test_name, sex, min_age, max_age, lo, hi, clo, chi, label))
+            conn.commit()
+        except sqlite3.IntegrityError:
+            conn.close()
+            show_warn(self, "Duplicate Bracket", "A rule with that Sex and Age bracket already exists for this assay.")
+            return
+        conn.close()
+
+        log_audit(self.operator_name, "DEMO_REF_RANGE_SAVED", "-", f"{self.test_name}: {label}")
+        self._clear_form()
+        self._load_rules()
+
+    def _delete_rule(self):
+        rows = self.tbl_rules.selectionModel().selectedRows()
+        if not rows:
+            show_info(self, "Select Rule", "Select a reference range row to delete.")
+            return
+        rid = int(self.tbl_rules.item(rows[0].row(), 0).text())
+        if not ask_confirm(self, "Delete Reference Rule", "Remove the selected demographic reference range?"):
+            return
+        conn = get_conn()
+        conn.execute("DELETE FROM reference_ranges WHERE id = ?", (rid,))
+        conn.commit()
+        conn.close()
+        log_audit(self.operator_name, "DEMO_REF_RANGE_DELETED", "-", f"{self.test_name} rule #{rid}")
+        self._clear_form()
+        self._load_rules()
+
+
+# ==============================================================================
 # CLEAN STAFF PIN LOGIN SCREEN (LIGHT & DARK AWARE)
 # ==============================================================================
 
@@ -1166,7 +1676,6 @@ class StaffLoginScreen(QWidget):
         self.bg_canvas = CleanLoginBackdrop(self)
         root.addWidget(self.bg_canvas, 0, 0)
 
-        # Top-right theme toggle on login gate
         top_overlay = QWidget(self)
         top_overlay.setAttribute(Qt.WA_TranslucentBackground)
         to_lay = QHBoxLayout(top_overlay)
@@ -1584,12 +2093,13 @@ class BatchPanelDialog(QDialog):
                     flag = "ABNORMAL"
 
             note_txt = self.note_inputs[o["id"]].text().strip()
+            coll_ts = o["collected_at"] or now
             conn.execute("""
                 UPDATE orders SET
                     result_value = ?, flag = ?, status = 'Verified', ref_range = ?,
-                    notes = ?, verified_by = ?, verified_at = ?, critical_flag = ?
+                    notes = ?, collected_at = ?, verified_by = ?, verified_at = ?, critical_flag = ?
                 WHERE id = ?
-            """, (val_str, flag, ref_lbl, note_txt, self.operator_name, now, is_crit, o["id"]))
+            """, (val_str, flag, ref_lbl, note_txt, coll_ts, self.operator_name, now, is_crit, o["id"]))
             verified_count += 1
 
         conn.commit()
@@ -2307,7 +2817,6 @@ def generate_specimen_pdf(patient: dict, specimen_id: str, orders: list, out_pat
             pdf.multi_cell(182, 4.5, _pdf_safe("  |  ".join(note_bits)))
             y = pdf.get_y() + 1
 
-    # Lookup PRC license & signature image paths for verifiers and Pathologist
     rmt_prc = ""
     rmt_sig_path = ""
     if verifiers:
@@ -2480,7 +2989,7 @@ def generate_shift_handover_pdf(operator_name: str, shift_label: str, out_path: 
     pending = conn.execute("""
         SELECT o.specimen_id, p.full_name, o.test_name, o.priority, o.ordered_at, o.storage_slot
         FROM orders o JOIN patients p ON o.patient_id = p.id
-        WHERE o.status NOT IN ('Verified', 'Amended', 'Rejected')
+        WHERE o.status NOT IN ('Verified', 'Amended', 'Rejected', 'Cancelled')
         ORDER BY CASE WHEN o.priority='STAT' THEN 0 ELSE 1 END, o.ordered_at ASC
     """).fetchall()
     criticals = conn.execute("""
@@ -2631,7 +3140,6 @@ class MainWorkspace(QWidget):
         self.clock_timer.start(1000)
         self._update_clock()
 
-        # Real-time background sync polling for multi-workstation LAN mode
         self.sync_timer = QTimer(self)
         self.sync_timer.timeout.connect(self._passive_sync)
         self.sync_timer.start(8000)
@@ -2724,7 +3232,7 @@ class MainWorkspace(QWidget):
         self.cmb_status_filter = QComboBox()
         self.cmb_status_filter.addItems([
             "All Statuses", "Pending / Active", "STAT Only",
-            "Critical / Abnormal", "Verified / Amended", "Rejected"
+            "Critical / Abnormal", "Verified / Amended", "Rejected / Cancelled"
         ])
         self.cmb_status_filter.currentTextChanged.connect(self.refresh_worklist)
         flt.addWidget(self.cmb_status_filter, 1)
@@ -2750,7 +3258,6 @@ class MainWorkspace(QWidget):
 
         splitter = QSplitter(Qt.Horizontal)
 
-        # Left: Collapsible Grouped Worklist Tree
         self.tbl_worklist = QTreeWidget()
         self.tbl_worklist.setColumnCount(8)
         self.tbl_worklist.setHeaderLabels([
@@ -2779,7 +3286,6 @@ class MainWorkspace(QWidget):
         self.tbl_worklist.itemDoubleClicked.connect(self._on_worklist_double_click)
         splitter.addWidget(self.tbl_worklist)
 
-        # Right: Scrollable Specimen Inspector & Result Entry
         scroll = QScrollArea()
         scroll.setObjectName("DarkScroll")
         scroll.setWidgetResizable(True)
@@ -2837,9 +3343,15 @@ class MainWorkspace(QWidget):
         btn_reject = QPushButton("Reject")
         btn_reject.setObjectName("DangerBtn")
         btn_reject.setMinimumHeight(38)
+        btn_reject.setToolTip("Log clinical specimen rejection (hemolysis, QNS, clotted, etc.)")
         btn_reject.clicked.connect(self._reject_selected_order)
         act_row.addWidget(btn_reject, 1)
         il.addLayout(act_row)
+
+        self.btn_cancel_order = QPushButton("Cancel Order (Uncollected)")
+        self.btn_cancel_order.setToolTip("Cancel an uncollected order prior to specimen draw")
+        self.btn_cancel_order.clicked.connect(self._cancel_selected_order)
+        il.addWidget(self.btn_cancel_order)
 
         grp_tools = QLabel("SPECIMEN HANDLING & BENCH TOOLS")
         grp_tools.setObjectName("GroupTitle")
@@ -2987,10 +3499,68 @@ class MainWorkspace(QWidget):
         self.tube_badge.set_tube(o["tube_type"])
         self.in_result.setText(o["result_value"] or "")
         self.in_notes.setText(o["notes"] or "")
+        self.btn_cancel_order.setEnabled(not o["collected_at"] and o["status"] == "Ordered")
         self.range_gauge.set_reading(
             o["result_value"] or "", lo, hi, clo, chi,
             o["flag"] or o["status"], animate_from_center=animate_from_center
         )
+
+    def _cancel_selected_order(self):
+        if not self.selected_order_id:
+            show_info(self, "No Selection", "Select an uncollected order to cancel.")
+            return
+        target_id = self.selected_order_id
+        conn = get_conn()
+        o = conn.execute("SELECT * FROM orders WHERE id = ?", (target_id,)).fetchone()
+        if not o:
+            conn.close()
+            return
+        if o["collected_at"] or o["status"] != "Ordered":
+            conn.close()
+            show_warn(
+                self, "Cannot Cancel Collected Order",
+                "Only uncollected orders in 'Ordered' status can be cancelled.\n"
+                "Use 'Reject' if the specimen has already been collected."
+            )
+            return
+        conn.close()
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Cancel Uncollected Order")
+        dlg.setStyleSheet(build_qss(CURRENT_THEME))
+        apply_window_titlebar_theme(dlg)
+        l = QVBoxLayout(dlg)
+        l.addWidget(QLabel(f"Cancel order for {o['test_name']} ({o['specimen_id']})?\nEnter cancellation reason:"))
+        cmb_reason = QComboBox()
+        cmb_reason.setEditable(True)
+        cmb_reason.addItems([
+            "Duplicate Order Entered",
+            "Physician Discontinued Test",
+            "Patient Discharged / Left Before Draw",
+            "Order Placed on Wrong Patient",
+        ])
+        l.addWidget(cmb_reason)
+        b_ok = QPushButton("Confirm Order Cancellation")
+        b_ok.setObjectName("DangerBtn")
+        b_ok.clicked.connect(dlg.accept)
+        l.addWidget(b_ok)
+
+        if dlg.exec() == QDialog.Accepted:
+            reason = cmb_reason.currentText().strip() or "Cancelled prior to collection"
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            note_prev = (o["notes"] or "").strip()
+            merged_note = f"{note_prev} | CANCELLED: {reason}".strip(" |")
+            conn = get_conn()
+            conn.execute("""
+                UPDATE orders
+                SET status = 'Cancelled', flag = 'CANCELLED', notes = ?, verified_by = ?, verified_at = ?
+                WHERE id = ?
+            """, (merged_note, self.user["name"], now, target_id))
+            conn.commit()
+            conn.close()
+            log_audit(self.user["name"], "ORDER_CANCELLED", o["specimen_id"], f"{o['test_name']}: {reason}")
+            self.refresh_all()
+            self._load_inspector_order(target_id, animate_from_center=False)
 
     def _open_batch_panel(self):
         spec_id = self.selected_specimen_id
@@ -3038,7 +3608,7 @@ class MainWorkspace(QWidget):
         if stage == "Collected":
             conn.execute("UPDATE orders SET status = ?, collected_at = COALESCE(collected_at, ?) WHERE id = ?", (stage, now, target_id))
         else:
-            conn.execute("UPDATE orders SET status = ? WHERE id = ?", (stage, target_id))
+            conn.execute("UPDATE orders SET status = ?, collected_at = COALESCE(collected_at, ?) WHERE id = ?", (stage, now, target_id))
         row = conn.execute("SELECT specimen_id FROM orders WHERE id = ?", (target_id,)).fetchone()
         conn.commit()
         conn.close()
@@ -3241,15 +3811,16 @@ class MainWorkspace(QWidget):
             amend_reason = f"{in_am.text().strip()} (was {o['result_value']})"
 
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        coll_ts = o["collected_at"] or now
         conn.execute("""
             UPDATE orders SET
                 result_value = ?, flag = ?, status = ?, ref_range = ?, notes = ?,
-                verified_by = ?, verified_at = ?, amended_reason = ?,
+                collected_at = ?, verified_by = ?, verified_at = ?, amended_reason = ?,
                 panic_notified_to = ?, delta_flag = ?, critical_flag = ?
             WHERE id = ?
         """, (
             val_str, flag, new_status, ref_lbl, self.in_notes.text().strip(),
-            self.user["name"], now, amend_reason,
+            coll_ts, self.user["name"], now, amend_reason,
             panic_notified, delta_msg, is_crit, verified_id
         ))
         conn.commit()
@@ -4017,6 +4588,10 @@ class MainWorkspace(QWidget):
         btn_add_t.setObjectName("PrimaryBtn")
         btn_add_t.clicked.connect(self._save_catalog_test)
 
+        btn_ref_dlg = QPushButton("Age/Sex Reference Ranges...")
+        btn_ref_dlg.setObjectName("SuccessBtn")
+        btn_ref_dlg.clicked.connect(self._open_reference_range_editor)
+
         fg.addWidget(self.cat_name, 0, 0, 1, 2)
         fg.addWidget(self.cat_dept, 0, 2)
         fg.addWidget(self.cat_tube, 0, 3)
@@ -4024,7 +4599,11 @@ class MainWorkspace(QWidget):
         fg.addWidget(self.cat_unit, 1, 0)
         fg.addWidget(self.cat_lo, 1, 1)
         fg.addWidget(self.cat_hi, 1, 2)
-        fg.addWidget(btn_add_t, 1, 3)
+
+        btn_sub = QHBoxLayout()
+        btn_sub.addWidget(btn_add_t)
+        btn_sub.addWidget(btn_ref_dlg)
+        fg.addLayout(btn_sub, 1, 3)
 
         lay.addWidget(form)
 
@@ -4035,6 +4614,7 @@ class MainWorkspace(QWidget):
         self.tbl_catalog.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.tbl_catalog.setWordWrap(True)
         self.tbl_catalog.itemSelectionChanged.connect(self._on_catalog_row_select)
+        self.tbl_catalog.doubleClicked.connect(lambda _idx: self._open_reference_range_editor())
         lay.addWidget(self.tbl_catalog, 1)
         return w
 
@@ -4052,6 +4632,19 @@ class MainWorkspace(QWidget):
         hi_txt = self.tbl_catalog.item(r, 4).text()
         self.cat_hi.setText("" if hi_txt == "-" else hi_txt)
         self.cat_tube.setCurrentText(self.tbl_catalog.item(r, 6).text())
+
+    def _open_reference_range_editor(self):
+        test_name = self.cat_name.text().strip()
+        if not test_name:
+            rows = self.tbl_catalog.selectionModel().selectedRows()
+            if rows:
+                test_name = self.tbl_catalog.item(rows[0].row(), 0).text()
+        if not test_name:
+            show_info(self, "Select Assay", "Select an assay from the catalog first to edit its age/sex reference ranges.")
+            return
+        dlg = ReferenceRangeEditorDialog(test_name, self.user["name"], self)
+        dlg.exec()
+        self.refresh_requisition_catalog()
 
     def _save_catalog_test(self):
         name = self.cat_name.text().strip()
@@ -4095,7 +4688,7 @@ class MainWorkspace(QWidget):
         el.setContentsMargins(16, 14, 16, 14)
         el.setSpacing(8)
 
-        lbl_exp = QLabel("Shift Handover, Backups & Multi-Workstation DB")
+        lbl_exp = QLabel("Shift Handover, Backups, Sample Cases & Shared DB")
         lbl_exp.setObjectName("SectionHeader")
         el.addWidget(lbl_exp)
 
@@ -4116,8 +4709,13 @@ class MainWorkspace(QWidget):
         btn_bak = QPushButton("Backup Database (.db)")
         btn_bak.setObjectName("SuccessBtn")
         btn_bak.clicked.connect(self._backup_db)
+        btn_seed = QPushButton("Load Sample Cases")
+        btn_seed.setObjectName("PrimaryBtn")
+        btn_seed.setToolTip("Populate realistic clinical cases using BSMT 1 Monocytes classmates + 12-day QC")
+        btn_seed.clicked.connect(self._load_sample_cases)
         db_row.addWidget(btn_csv)
         db_row.addWidget(btn_bak)
+        db_row.addWidget(btn_seed)
         el.addLayout(db_row)
 
         lan_row = QHBoxLayout()
@@ -4191,6 +4789,22 @@ class MainWorkspace(QWidget):
         lay.addLayout(left_col, 1)
         lay.addWidget(aud_card, 1)
         return w
+
+    def _load_sample_cases(self):
+        if not ask_confirm(
+            self, "Load Sample Clinical Cases",
+            "Populate sample clinical cases (critical value read-back, Full CBC + PBS smear, "
+            "Dengue serial trend, Culture & Antibiogram, Urinalysis/Fecalysis, pending STATs, "
+            "and 12-day Levey-Jennings QC) for BSMT 1 Monocytes patients?"
+        ):
+            return
+        res = seed_sample_clinical_cases(self.user["name"])
+        self.refresh_all()
+        show_info(
+            self, "Sample Cases Loaded",
+            f"Loaded {res['specimens_seeded']} clinical specimen sets across {res['patients_total']} "
+            f"BSMT 1 Monocytes classmates and {res['qc_points']} Levey-Jennings QC runs."
+        )
 
     def _switch_shared_db(self):
         path, _ = QFileDialog.getSaveFileName(
@@ -4299,7 +4913,7 @@ class MainWorkspace(QWidget):
     def refresh_kpis(self):
         conn = get_conn()
         tot = conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0]
-        pend = conn.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('Verified', 'Amended', 'Rejected')").fetchone()[0]
+        pend = conn.execute("SELECT COUNT(*) FROM orders WHERE status NOT IN ('Verified', 'Amended', 'Rejected', 'Cancelled')").fetchone()[0]
         stat = conn.execute("SELECT COUNT(*) FROM orders WHERE priority = 'STAT' OR critical_flag = 1 OR flag LIKE 'CRITICAL%'").fetchone()[0]
         ver = conn.execute("SELECT COUNT(*) FROM orders WHERE status IN ('Verified', 'Amended')").fetchone()[0]
         conn.close()
@@ -4308,8 +4922,8 @@ class MainWorkspace(QWidget):
 
     def _compute_tat_info(self, r, now_dt: datetime):
         """Returns (tat_label, is_warning, is_overdue) splitting Collection TAT and Analytical TAT."""
-        if r["status"] in ("Verified", "Amended", "Rejected"):
-            return ("Done", False, False)
+        if r["status"] in ("Verified", "Amended", "Rejected", "Cancelled"):
+            return ("Done" if r["status"] != "Cancelled" else "Cancelled", False, False)
         try:
             odt = datetime.strptime(r["ordered_at"], "%Y-%m-%d %H:%M:%S")
         except Exception:
@@ -4336,7 +4950,7 @@ class MainWorkspace(QWidget):
             return "#D97706"
         if badge in ("NORMAL", "All Verified"):
             return "#059669"
-        if badge == "REJECTED":
+        if badge in ("REJECTED", "CANCELLED"):
             return "#64748B"
         return "#0284C7"
 
@@ -4351,7 +4965,7 @@ class MainWorkspace(QWidget):
         rows = conn.execute("""
             SELECT o.*, p.full_name, p.mrn
             FROM orders o JOIN patients p ON o.patient_id = p.id
-            ORDER BY CASE WHEN o.priority='STAT' AND o.status NOT IN ('Verified','Amended') THEN 0 ELSE 1 END, o.id DESC
+            ORDER BY CASE WHEN o.priority='STAT' AND o.status NOT IN ('Verified','Amended','Cancelled') THEN 0 ELSE 1 END, o.id DESC
         """).fetchall()
         conn.close()
 
@@ -4361,7 +4975,7 @@ class MainWorkspace(QWidget):
                 continue
             if dept != "All Departments" and r["department"] != dept:
                 continue
-            if st_f == "Pending / Active" and r["status"] in ("Verified", "Amended", "Rejected"):
+            if st_f == "Pending / Active" and r["status"] in ("Verified", "Amended", "Rejected", "Cancelled"):
                 continue
             elif st_f == "STAT Only" and r["priority"] != "STAT":
                 continue
@@ -4369,7 +4983,7 @@ class MainWorkspace(QWidget):
                 continue
             elif st_f == "Verified / Amended" and r["status"] not in ("Verified", "Amended"):
                 continue
-            elif st_f == "Rejected" and r["status"] != "Rejected":
+            elif st_f == "Rejected / Cancelled" and r["status"] not in ("Rejected", "Cancelled"):
                 continue
             filtered.append(r)
 
@@ -4418,87 +5032,83 @@ class MainWorkspace(QWidget):
                 is_any_stat = any(x["priority"] == "STAT" for x in items)
                 prio_summary = "STAT" if is_any_stat else first["priority"]
 
-                done_cnt = sum(1 for x in items if x["status"] in ("Verified", "Amended", "Rejected"))
-                has_crit = any((x["flag"] or "") in ("CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL", "HIGH") for x in items)
-                if done_cnt == len(items):
-                    grp_status = "All Verified"
-                elif has_crit:
-                    grp_status = "Critical Alert"
-                elif done_cnt > 0:
-                    grp_status = "In Progress"
+                done_cnt = sum(1 for x in items if x["status"] in ("Verified", "Amended", "Rejected", "Cancelled"))
+                has_crit = any((x["flag"] or "") in ("CRITICAL HIGH", "CRITICAL LOW", "ABNORMAL") for x in items)
+                has_abn = any((x["flag"] or "") in ("HIGH", "LOW") for x in items)
+                if has_crit:
+                    group_badge = "Critical Alert"
+                elif done_cnt == len(items):
+                    group_badge = "All Verified"
+                elif has_abn:
+                    group_badge = f"{done_cnt}/{len(items)} Done (Abn)"
                 else:
-                    grp_status = first["status"]
+                    group_badge = f"{done_cnt}/{len(items)} Verified"
 
-                tat_infos = [self._compute_tat_info(x, now_dt) for x in items if self._compute_tat_info(x, now_dt)[0] != "Done"]
-                tat_summary = tat_infos[0][0] if tat_infos else "Done"
-                tests_preview = ", ".join(x["test_name"] for x in items)
+                any_warn = False
+                any_over = False
+                tat_parts = []
+                for x in items:
+                    ts, tw, to = self._compute_tat_info(x, now_dt)
+                    any_warn = any_warn or tw
+                    any_over = any_over or to
+                    if ts not in ("Done", "Cancelled", "-") and ts not in tat_parts:
+                        tat_parts.append(ts)
+                group_tat = tat_parts[0] if tat_parts else "Done"
 
-                grp_cols = [
-                    sid,
-                    f"{first['full_name']} ({len(items)} tests)",
-                    tests_preview,
-                    dept_summary,
-                    prio_summary,
-                    tat_summary,
-                    f"{done_cnt} / {len(items)} Verified",
-                    grp_status,
-                ]
-                parent_node = QTreeWidgetItem(grp_cols)
+                test_summary = f"{len(items)} Assays ({', '.join(x['test_name'].split(' (')[0] for x in items[:3])}{'...' if len(items) > 3 else ''})"
+                res_summary = f"{done_cnt}/{len(items)} Completed"
+
+                parent_cols = [sid, first["full_name"], test_summary, dept_summary, prio_summary, group_tat, res_summary, group_badge]
+                parent_node = QTreeWidgetItem(parent_cols)
+                parent_node.setData(0, Qt.UserRole, None)
                 parent_node.setData(0, Qt.UserRole + 1, sid)
-                for c_idx, txt in enumerate(grp_cols):
-                    parent_node.setToolTip(c_idx, txt)
+                for c_idx, txt in enumerate(parent_cols):
+                    parent_node.setFont(c_idx, bold_font)
                     parent_node.setBackground(c_idx, group_bg)
-                parent_node.setFont(0, bold_font)
-                parent_node.setFont(1, bold_font)
-                if is_any_stat:
+                    parent_node.setToolTip(c_idx, txt)
+                if prio_summary == "STAT":
                     parent_node.setForeground(4, QBrush(QColor("#E11D48")))
-                parent_node.setForeground(7, QBrush(QColor(self._status_color(grp_status))))
+                if any_over:
+                    parent_node.setForeground(5, QBrush(QColor("#E11D48")))
+                elif any_warn:
+                    parent_node.setForeground(5, QBrush(QColor("#D97706")))
+                parent_node.setForeground(7, QBrush(QColor(self._status_color(group_badge))))
 
-                self.tbl_worklist.addTopLevelItem(parent_node)
-                parent_node.setExpanded(sid not in self.collapsed_specimens)
-
-                for r in sorted(items, key=lambda x: x["id"]):
-                    tat_str, tat_warn, tat_over = self._compute_tat_info(r, now_dt)
-                    res_txt = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
-                    badge = r["flag"] if r["flag"] else r["status"]
-                    child_cols = [
-                        f"↳ #{r['id']}",
-                        r["full_name"],
-                        r["test_name"],
-                        r["department"],
-                        r["priority"],
-                        tat_str,
-                        res_txt,
-                        badge,
-                    ]
+                for r in items:
+                    c_tat, c_warn, c_over = self._compute_tat_info(r, now_dt)
+                    c_res = f"{r['result_value']} {r['unit'] or ''}".strip() if r["result_value"] else "-"
+                    c_badge = r["flag"] if r["flag"] else r["status"]
+                    child_cols = ["", r["full_name"], r["test_name"], r["department"], r["priority"], c_tat, c_res, c_badge]
                     child = QTreeWidgetItem(child_cols)
                     child.setData(0, Qt.UserRole, r["id"])
                     for c_idx, txt in enumerate(child_cols):
                         child.setToolTip(c_idx, txt)
-                    child.setForeground(0, QBrush(QColor("#64748B")))
                     if r["priority"] == "STAT":
                         child.setForeground(4, QBrush(QColor("#E11D48")))
-                    if tat_over:
+                    if c_over:
                         child.setForeground(5, QBrush(QColor("#E11D48")))
-                    elif tat_warn:
+                    elif c_warn:
                         child.setForeground(5, QBrush(QColor("#D97706")))
-                    child.setForeground(7, QBrush(QColor(self._status_color(badge))))
+                    child.setForeground(7, QBrush(QColor(self._status_color(c_badge))))
                     parent_node.addChild(child)
                     if r["id"] == target_order_id:
-                        parent_node.setExpanded(True)
-                        self.collapsed_specimens.discard(sid)
                         item_to_select = child
+
+                self.tbl_worklist.addTopLevelItem(parent_node)
+                should_expand = (sid not in self.collapsed_specimens) or any(x["id"] == target_order_id for x in items)
+                parent_node.setExpanded(should_expand)
+
+        self.tbl_worklist.blockSignals(False)
 
         if item_to_select is not None:
             self.tbl_worklist.setCurrentItem(item_to_select)
             self.tbl_worklist.scrollToItem(item_to_select)
-        self.tbl_worklist.blockSignals(False)
 
     def refresh_requisition_catalog(self):
         conn = get_conn()
-        pts = conn.execute("SELECT id, mrn, full_name FROM patients ORDER BY full_name ASC").fetchall()
-        tests = conn.execute("SELECT * FROM tests ORDER BY department, test_name").fetchall()
-        demo_counts = {
+        pts = conn.execute("SELECT id, full_name, mrn FROM patients ORDER BY full_name ASC").fetchall()
+        tests = conn.execute("SELECT * FROM tests ORDER BY department ASC, test_name ASC").fetchall()
+        rule_counts = {
             r["test_name"]: r["cnt"]
             for r in conn.execute("SELECT test_name, COUNT(*) AS cnt FROM reference_ranges GROUP BY test_name").fetchall()
         }
@@ -4507,7 +5117,7 @@ class MainWorkspace(QWidget):
         cur_pid = self.cmb_req_patient.currentData()
         self.cmb_req_patient.blockSignals(True)
         self.cmb_req_patient.clear()
-        self.cmb_req_patient.addItem("-- Register New Patient --", None)
+        self.cmb_req_patient.addItem("-- New Patient --", None)
         for p in pts:
             self.cmb_req_patient.addItem(f"{p['full_name']} ({p['mrn']})", p["id"])
         if cur_pid:
@@ -4516,48 +5126,53 @@ class MainWorkspace(QWidget):
                 self.cmb_req_patient.setCurrentIndex(idx)
         self.cmb_req_patient.blockSignals(False)
 
-        if not self.test_checkboxes:
-            for t in tests:
-                row_w = QFrame()
-                row_w.setStyleSheet("""
-                    QFrame {
-                        background-color: transparent;
-                        border-bottom: 1px solid rgba(148, 163, 184, 0.22);
-                    }
-                    QFrame:hover {
-                        background-color: rgba(56, 189, 248, 0.08);
-                        border-radius: 6px;
-                    }
-                """)
-                rl = QHBoxLayout(row_w)
-                rl.setContentsMargins(8, 6, 8, 6)
-                rl.setSpacing(10)
+        checked_before = {t for t, cb in self.test_checkboxes.items() if cb.isChecked()}
+        while self.chk_list_layout.count():
+            item = self.chk_list_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.test_checkboxes.clear()
+        self.assay_row_widgets.clear()
 
-                cb = QCheckBox(t["test_name"])
-                cb.stateChanged.connect(self._update_selected_assay_count)
-                rl.addWidget(cb, 1)
+        for t in tests:
+            row_w = QWidget()
+            row_w.setStyleSheet("background-color: transparent;")
+            rl = QHBoxLayout(row_w)
+            rl.setContentsMargins(4, 3, 4, 3)
+            rl.setSpacing(8)
 
-                tube_lbl = QLabel(t["tube_type"] or "")
-                tube_lbl.setObjectName("MutedLabel")
-                rl.addWidget(tube_lbl)
+            cb = QCheckBox(t["test_name"])
+            cb.setChecked(t["test_name"] in checked_before)
+            cb.stateChanged.connect(lambda _s: self._update_selected_assay_count())
+            rl.addWidget(cb, 3)
 
-                self.chk_list_layout.addWidget(row_w)
-                self.test_checkboxes[t["test_name"]] = cb
-                blob = f"{t['test_name']} {t['department']} {t['tube_type']}".lower()
-                self.assay_row_widgets.append((row_w, blob))
-            self.chk_list_layout.addStretch()
+            dept_lbl = QLabel(t["department"])
+            dept_lbl.setObjectName("MutedLabel")
+            dept_lbl.setStyleSheet("background-color: transparent;")
+            rl.addWidget(dept_lbl, 1)
+
+            tube_lbl = QLabel(t["tube_type"] or "Gold (SST)")
+            tube_lbl.setStyleSheet("color: #38BDF8; font-size: 8.5pt; font-weight: 600; background-color: transparent;")
+            rl.addWidget(tube_lbl, 1)
+
+            self.chk_list_layout.addWidget(row_w)
+            self.test_checkboxes[t["test_name"]] = cb
+            blob = f"{t['test_name']} {t['department']} {t['tube_type'] or ''}".lower()
+            self.assay_row_widgets.append((row_w, blob))
+
+        self._filter_assay_checkboxes(self.in_assay_filter.text() if hasattr(self, "in_assay_filter") else "")
+        self._update_selected_assay_count()
 
         self.tbl_catalog.setRowCount(len(tests))
         for i, t in enumerate(tests):
             self.tbl_catalog.setItem(i, 0, _make_item(t["test_name"]))
             self.tbl_catalog.setItem(i, 1, _make_item(t["department"]))
             self.tbl_catalog.setItem(i, 2, _make_item(t["unit"] or "-"))
-            self.tbl_catalog.setItem(i, 3, _make_item(str(t["low_val"]) if t["low_val"] is not None else "-"))
-            self.tbl_catalog.setItem(i, 4, _make_item(str(t["high_val"]) if t["high_val"] is not None else "-"))
-            dc = demo_counts.get(t["test_name"], 0)
-            rule_txt = f"{dc} Age/Sex Rule(s)" if dc else "Standard Adult"
-            self.tbl_catalog.setItem(i, 5, _make_item(rule_txt, "#0284C7" if dc else None))
-            self.tbl_catalog.setItem(i, 6, _make_item(t["tube_type"] or "-"))
+            self.tbl_catalog.setItem(i, 3, _make_item(f"{t['low_val']:g}" if t["low_val"] is not None else "-"))
+            self.tbl_catalog.setItem(i, 4, _make_item(f"{t['high_val']:g}" if t["high_val"] is not None else "-"))
+            r_cnt = rule_counts.get(t["test_name"], 0)
+            self.tbl_catalog.setItem(i, 5, _make_item(f"{r_cnt} rule{'s' if r_cnt != 1 else ''}"))
+            self.tbl_catalog.setItem(i, 6, _make_item(t["tube_type"] or "Gold (SST)"))
         self.tbl_catalog.resizeRowsToContents()
 
     def refresh_pathologist_queue(self):
@@ -4574,26 +5189,24 @@ class MainWorkspace(QWidget):
         """).fetchall()
         conn.close()
 
-        unsigned_cnt = sum(1 for r in rows if not r["pathologist_signed_by"])
-        tab_label = f"Pathologist Review ({unsigned_cnt})" if unsigned_cnt > 0 else "Pathologist Review"
-        self.tabs.setTabText(3, tab_label)
-
         self.tbl_path.setRowCount(len(rows))
         for i, r in enumerate(rows):
             self.tbl_path.setItem(i, 0, _make_item(str(r["id"])))
             self.tbl_path.setItem(i, 1, _make_item(r["specimen_id"]))
             self.tbl_path.setItem(i, 2, _make_item(r["full_name"]))
             self.tbl_path.setItem(i, 3, _make_item(r["test_name"]))
-            self.tbl_path.setItem(i, 4, _make_item(r["result_value"] or "Pending"))
-            self.tbl_path.setItem(i, 5, _make_item(r["flag"] or r["status"]))
-            cs = f"Signed ({r['pathologist_signed_at']})" if r["pathologist_signed_by"] else "Awaiting MD Co-Sign"
-            cs_col = "#059669" if r["pathologist_signed_by"] else "#D97706"
-            self.tbl_path.setItem(i, 6, _make_item(cs, cs_col))
+            self.tbl_path.setItem(i, 4, _make_item(r["result_value"] or "-"))
+            trig = r["flag"] or r["status"]
+            t_col = "#E11D48" if "CRITICAL" in trig or trig == "ABNORMAL" else "#0284C7"
+            self.tbl_path.setItem(i, 5, _make_item(trig, t_col))
+            signed = f"Signed: {r['pathologist_signed_by']}" if r["pathologist_signed_by"] else "Pending Co-Sign"
+            s_col = "#059669" if r["pathologist_signed_by"] else "#D97706"
+            self.tbl_path.setItem(i, 6, _make_item(signed, s_col))
         self.tbl_path.resizeRowsToContents()
 
     def refresh_qc_targets(self):
         conn = get_conn()
-        targets = conn.execute("SELECT label FROM qc_targets ORDER BY label").fetchall()
+        targets = conn.execute("SELECT label FROM qc_targets ORDER BY label ASC").fetchall()
         conn.close()
         cur = self.cmb_qc_target.currentText()
         self.cmb_qc_target.blockSignals(True)
@@ -4601,18 +5214,20 @@ class MainWorkspace(QWidget):
         for t in targets:
             self.cmb_qc_target.addItem(t["label"])
         if cur:
-            self.cmb_qc_target.setCurrentText(cur)
+            idx = self.cmb_qc_target.findText(cur)
+            if idx >= 0:
+                self.cmb_qc_target.setCurrentIndex(idx)
         self.cmb_qc_target.blockSignals(False)
 
     def refresh_patients(self):
-        q = self.in_pt_search.text().strip().lower()
+        q = self.in_pt_search.text().strip().lower() if hasattr(self, "in_pt_search") else ""
         conn = get_conn()
-        rows = conn.execute("SELECT * FROM patients ORDER BY full_name ASC").fetchall()
+        rows = conn.execute("SELECT * FROM patients ORDER BY id DESC").fetchall()
         conn.close()
 
         filtered = [
             r for r in rows
-            if not q or q in r["full_name"].lower() or q in r["mrn"].lower() or q in (r["physician"] or "").lower()
+            if not q or q in (r["full_name"] or "").lower() or q in (r["mrn"] or "").lower() or q in (r["physician"] or "").lower()
         ]
         self.tbl_patients.setRowCount(len(filtered))
         for i, r in enumerate(filtered):
@@ -4627,8 +5242,8 @@ class MainWorkspace(QWidget):
 
     def refresh_system(self):
         conn = get_conn()
-        staff = conn.execute("SELECT * FROM staff ORDER BY pin ASC").fetchall()
-        audits = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 100").fetchall()
+        staff = conn.execute("SELECT pin, name, role, prc_license FROM staff ORDER BY pin ASC").fetchall()
+        logs = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT 120").fetchall()
         conn.close()
 
         self.tbl_staff.setRowCount(len(staff))
@@ -4637,9 +5252,10 @@ class MainWorkspace(QWidget):
             self.tbl_staff.setItem(i, 1, _make_item(s["name"]))
             self.tbl_staff.setItem(i, 2, _make_item(s["role"]))
             self.tbl_staff.setItem(i, 3, _make_item(s["prc_license"] or "-"))
+        self.tbl_staff.resizeRowsToContents()
 
-        self.tbl_audit.setRowCount(len(audits))
-        for i, a in enumerate(audits):
+        self.tbl_audit.setRowCount(len(logs))
+        for i, a in enumerate(logs):
             self.tbl_audit.setItem(i, 0, _make_item(a["timestamp"]))
             self.tbl_audit.setItem(i, 1, _make_item(a["operator"]))
             self.tbl_audit.setItem(i, 2, _make_item(a["action"]))
@@ -4649,35 +5265,37 @@ class MainWorkspace(QWidget):
 
 
 # ==============================================================================
-# MAIN SHELL WINDOW
+# APPLICATION SHELL (PIN GATE -> MAIN WORKSPACE)
 # ==============================================================================
 
-class MonocytesLisApp(QMainWindow):
+class LisMainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.setObjectName("RootCanvas")
         self.setWindowTitle(APP_TITLE)
-        self.resize(1380, 860)
-        self.setMinimumSize(1120, 720)
+        self.resize(1380, 840)
+        self.setMinimumSize(1024, 680)
+        self.setStyleSheet(build_qss(CURRENT_THEME))
         apply_window_titlebar_theme(self)
 
         self.stack = QStackedWidget()
         self.setCentralWidget(self.stack)
 
-        self.login_gate = StaffLoginScreen(self)
-        self.login_gate.authenticated.connect(self._on_authenticated)
-        self.login_gate.theme_toggled.connect(self._toggle_theme)
-        self.stack.addWidget(self.login_gate)
+        self.login_screen = StaffLoginScreen()
+        self.login_screen.authenticated.connect(self._on_authenticated)
+        self.login_screen.theme_toggled.connect(self.toggle_theme)
+        self.stack.addWidget(self.login_screen)
+
         self.workspace = None
 
-    def _toggle_theme(self):
+    def toggle_theme(self):
         global CURRENT_THEME
         CURRENT_THEME = "light" if CURRENT_THEME == "dark" else "dark"
         APP_CONFIG["theme"] = CURRENT_THEME
         save_config(APP_CONFIG)
-
-        QApplication.instance().setStyleSheet(build_qss(CURRENT_THEME))
+        self.setStyleSheet(build_qss(CURRENT_THEME))
         apply_window_titlebar_theme(self)
-        self.login_gate.apply_theme()
+        self.login_screen.apply_theme()
         if self.workspace is not None:
             self.workspace.on_theme_changed()
 
@@ -4687,34 +5305,38 @@ class MonocytesLisApp(QMainWindow):
             self.workspace.deleteLater()
             self.workspace = None
 
-        self.workspace = MainWorkspace(user, self)
-        self.workspace.lock_requested.connect(self._on_lock)
-        self.workspace.theme_toggled.connect(self._toggle_theme)
+        self.workspace = MainWorkspace(user)
+        self.workspace.lock_requested.connect(self._lock_session)
+        self.workspace.theme_toggled.connect(self.toggle_theme)
         self.stack.addWidget(self.workspace)
         self.stack.setCurrentWidget(self.workspace)
 
-    def _on_lock(self):
+    def _lock_session(self):
         if self.workspace is not None:
-            log_audit(self.workspace.user["name"], "SESSION_LOCKED", "-", "Operator locked workstation")
+            log_audit(f"{self.workspace.user['name']} ({self.workspace.user['pin']})", "SESSION_LOCK", "-", "Locked workstation")
             self.stack.removeWidget(self.workspace)
             self.workspace.deleteLater()
             self.workspace = None
-        self.login_gate.reset_gate()
-        self.stack.setCurrentWidget(self.login_gate)
-
-    def closeEvent(self, event):
-        perform_daily_backup()
-        super().closeEvent(event)
+        self.login_screen.reset_gate()
+        self.stack.setCurrentWidget(self.login_screen)
 
 
 def main():
-    QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    if sys.platform == "win32":
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("MonocytesDelegates.LIS.4_0")
+        except Exception:
+            pass
+
+    init_db()
+    perform_daily_backup()
+
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_TITLE)
     app.setStyle("Fusion")
     app.setStyleSheet(build_qss(CURRENT_THEME))
 
-    init_db()
-    win = MonocytesLisApp()
+    win = LisMainWindow()
     win.show()
     sys.exit(app.exec())
 
